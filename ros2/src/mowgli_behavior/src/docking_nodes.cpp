@@ -84,8 +84,7 @@ BT::NodeStatus DockRobot::onStart()
   // covers a fresh install whose dock pose was never calibrated.
   phase_ = Phase::kDock;
   const double prestage_d = ctx->dock_prestage_distance_m;
-  const bool dock_pose_known =
-      !(ctx->dock_x == 0.0 && ctx->dock_y == 0.0 && ctx->dock_yaw == 0.0);
+  const bool dock_pose_known = !(ctx->dock_x == 0.0 && ctx->dock_y == 0.0 && ctx->dock_yaw == 0.0);
   if (prestage_d > 0.0 && dock_pose_known)
   {
     if (!nav_client_)

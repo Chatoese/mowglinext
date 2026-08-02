@@ -1602,9 +1602,8 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
     cursor = cit->second;
   }
   auto lc_it = ctx->area_last_cursor.find(current_area_idx_);
-  const bool cursor_progress =
-      (lc_it != ctx->area_last_cursor.end()) &&
-      (cursor > lc_it->second + BTContext::kMinCursorProgressPoses);
+  const bool cursor_progress = (lc_it != ctx->area_last_cursor.end()) &&
+                               (cursor > lc_it->second + BTContext::kMinCursorProgressPoses);
   // High-water mark, monotonic: a rewound/cleared cursor never lowers it, so
   // oscillating around one spot cannot keep resetting the counter.
   if (lc_it == ctx->area_last_cursor.end() || cursor > lc_it->second)
