@@ -116,6 +116,12 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
       static_cast<int>(declare_parameter<int>("boundary_debounce_samples", 3));
   boundary_recovery_offset_m_ = declare_parameter<double>("boundary_recovery_offset_m", 0.8);
   boundary_inner_margin_m_ = declare_parameter<double>("boundary_inner_margin_m", 0.0);
+  // Non-lethal high-cost band along the INSIDE of every area edge in the
+  // keepout mask (0 = off). Unlike boundary_inner_margin_m (LETHAL shrink),
+  // this only PENALISES boundary-hugging so Smac centres transit paths in
+  // zone-connecting corridors, while goals near the edge (headland-ring
+  // starts) stay reachable. See kInnerCostBandMaskCost in costmap_filters.cpp.
+  boundary_inner_cost_band_m_ = declare_parameter<double>("boundary_inner_cost_band_m", 0.0);
   strip_boundary_margin_m_ = declare_parameter<double>("strip_boundary_margin_m", 1.20);
   mow_angle_override_deg_ =
       declare_parameter<double>("mow_angle_deg", std::numeric_limits<double>::quiet_NaN());

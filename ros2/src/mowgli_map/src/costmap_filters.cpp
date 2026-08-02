@@ -43,6 +43,20 @@ namespace mowgli_map
 // recoveries mid-transit.
 constexpr int8_t kOutsideSlackMaskCost = 50;
 
+// Mask value for the INSIDE cost band (cells inside an area but within
+// boundary_inner_cost_band_m of its edge). NON-LETHAL by design — unlike the
+// boundary_inner_margin_m shrunk-polygon rule (LETHAL), this band must stay
+// traversable: TransitToStrip goals (headland-ring starts) sit ~0.1-0.3 m from
+// the polygon edge, and a lethal band there fails Smac with "Goal occupied".
+// 65 maps to cost ~165 via the base=0/multiplier=1 filter info — well below
+// INSCRIBED (253), so A* routes THROUGH the band only when no cheaper interior
+// route exists. Effect on a zone-connecting corridor: both edges carry the
+// band, the middle stays free (0), and the transit path centres itself instead
+// of hugging the boundary (field incident 2026-08-02: shortest-path transit
+// planned flush with the corridor edge; downhill side-slip on the lateral
+// slope pushed the mower over the line within seconds).
+constexpr int8_t kInnerCostBandMaskCost = 65;
+
 void MapServerNode::publish_keepout_mask()
 {
   if (areas_.empty())
@@ -201,7 +215,7 @@ void MapServerNode::publish_keepout_mask()
         if (point_in_polygon(pt, area.polygon))
         {
           inside_any = true;
-          if (boundary_inner_margin_m_ > 0.0)
+          if (boundary_inner_margin_m_ > 0.0 || boundary_inner_cost_band_m_ > 0.0)
           {
             double d = point_to_polygon_distance(static_cast<double>(pt.x),
                                                  static_cast<double>(pt.y),
@@ -240,7 +254,11 @@ void MapServerNode::publish_keepout_mask()
       {
         if (!inner_buffer)
         {
-          mask.data[flat_idx] = 0;
+          // Non-lethal inner cost band (transit centring) — see the constant's
+          // comment. The lethal inner_buffer above wins where both overlap.
+          const bool in_cost_band = boundary_inner_cost_band_m_ > 0.0 &&
+                                    inside_min_edge_dist < boundary_inner_cost_band_m_;
+          mask.data[flat_idx] = in_cost_band ? kInnerCostBandMaskCost : 0;
         }
       }
       else if (within_outside_margin)

@@ -438,6 +438,7 @@ private:
   /// Default 0.3 m — pairs with inflation_radius 0.4 m for a total soft-wall
   /// of ~0.7 m inside the polygon.
   double boundary_inner_margin_m_{0.3};
+  double boundary_inner_cost_band_m_{0.0};
 
   /// Extra LETHAL margin grown around drawn obstacle polygons in the keepout
   /// mask (mowgli_robot.yaml.obstacle_margin, GUI: Settings → Obstacles).

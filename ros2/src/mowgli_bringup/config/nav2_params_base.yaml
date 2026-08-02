@@ -372,16 +372,30 @@ controller_server:
       # 0.010, best), 0.0→6 cm (loses damping authority, ω std climbs). So
       # kd_lat=0.5 is the sweet spot — enough damping, no pumping. Weave on a
       # straight swath dropped from ~17 cm to ~3 cm pk-pk.
+      # 2026-08-02 SLOPE TUNING (laterally sloped lawn, field session): with
+      # kp_lat 0.8 and NO lateral integral, constant downhill side-slip could
+      # only be countered by a STEADY-STATE cross-track offset (~25 cm at the
+      # observed disturbance) — the mower tracked parallel to the swath but
+      # displaced downhill, drifting over the area boundary. The ROS1
+      # ftc_local_planner values that ran well on this same chassis (OpenMower
+      # production config: kp_lat 25.0, ki_lat 0.062, kd_ang 0.5,
+      # max_cmd_vel_ang 3.1) are structurally comparable — this is a measured
+      # step toward them, NOT a wholesale transplant: the June anti-weave
+      # findings (kd_lat pumping at the LPF corner, kp_ang saturating the
+      # angular clamp) still apply at our 10 Hz fused-pose jitter. ki_lat nulls
+      # the constant-disturbance offset; kd_ang adds the heading damping that
+      # lets kp_lat rise without re-exciting the limit cycle; the higher clamp
+      # restores stell reserve so the P term saturates later.
       kp_lon: 1.0
       ki_lon: 0.0
       kd_lon: 0.0
-      kp_lat: 0.8
-      ki_lat: 0.0
+      kp_lat: 2.0
+      ki_lat: 0.06
       kd_lat: 0.5
       kp_ang: 1.5             # PRE_ROTATE pivot gain — MUST stay high (deadband)
       kp_ang_following: 1.0   # FOLLOWING (straight-swath) heading gain — kills the weave
       ki_ang: 0.0
-      kd_ang: 0.0
+      kd_ang: 0.5
       # Low-pass the PID derivative (cherry-picked from PR #290, commit 64dce368).
       # The raw finite-difference derivative amplifies the 10 Hz fused-pose jitter
       # and a too-high kd_lat pumps it into a steering limit cycle ("hunting" /
@@ -391,7 +405,7 @@ controller_server:
       # tuning above — kd_lat was dropped to 0.5). 0 reverts to the raw derivative.
       derivative_filter_tau: 0.2
       max_cmd_vel_speed: 0.30
-      max_cmd_vel_ang: 0.8
+      max_cmd_vel_ang: 1.5
       # Loose goal-acceptance envelope: the F2C path's last pose can sit 25-50 cm
       # from where the PID can converge (Dubins-connector approach-angle bias),
       # and near the goal fine-heading commands fall sub-deadband on the wheel-PI

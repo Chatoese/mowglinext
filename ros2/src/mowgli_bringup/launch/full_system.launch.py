@@ -332,6 +332,11 @@ def generate_launch_description() -> LaunchDescription:
                 robot_params.get("lethal_outside_areas", True))},
             {"enforce_boundary_margin_m": float(
                 robot_params.get("enforce_boundary_margin_m", 0.40))},
+            # Non-lethal inner cost band: penalise (not forbid) planning close
+            # to the inside of an area edge so zone-connecting transits centre
+            # in their corridor instead of hugging the boundary. 0 disables.
+            {"boundary_inner_cost_band_m": float(
+                robot_params.get("boundary_inner_cost_band_m", 0.0))},
             # tool_width is the SINGLE source of truth (mowgli_robot.yaml) for
             # both the mark_cells_mowed stamp radius / sliver detection here AND
             # coverage_server.operation_width (injected by navigation.launch.py).

@@ -449,6 +449,41 @@ TEST_F(AreaTypeTest, KeepoutMaskTreatsNavigationAreasAsAllowed)
   EXPECT_EQ(mask_at(mask, -2.5, 2.5), 100) << "outside both areas must be lethal";
 }
 
+// Non-lethal inner cost band (boundary_inner_cost_band_m > 0): cells inside an
+// area but within the band of its edge carry mid-cost 65 — penalised so Smac
+// centres zone-connecting transits in their corridor instead of hugging the
+// boundary (2026-08-02 field incident: flush-planned transit + slope side-slip
+// pushed the robot over the line), yet traversable so headland-ring start
+// goals near the edge never fail "Goal occupied". Default (0.0 = off) keeps
+// the mask bit-identical — pinned by KeepoutMaskMarksOutsideAreasLethal above.
+TEST_F(AreaTypeTest, KeepoutMaskInnerCostBandPenalisesBoundaryHugging)
+{
+  // Rebuild the node with the band enabled (0.5 m).
+  rclcpp::NodeOptions opts;
+  opts.append_parameter_override("resolution", 0.1);
+  opts.append_parameter_override("map_size_x", 10.0);
+  opts.append_parameter_override("map_size_y", 10.0);
+  opts.append_parameter_override("map_frame", "map");
+  opts.append_parameter_override("tool_width", 0.2);
+  opts.append_parameter_override("map_file_path", "");
+  opts.append_parameter_override("areas_file_path", "");
+  opts.append_parameter_override("publish_rate", 1.0);
+  opts.append_parameter_override("boundary_inner_cost_band_m", 0.5);
+  node_ = std::make_shared<mowgli_map::MapServerNode>(opts);
+
+  ASSERT_TRUE(add_area("lawn", make_rect(-3, -2, 3, 2), /*is_navigation=*/false));
+  const auto mask = node_->build_keepout_mask_for_test();
+
+  // Deep interior (> 0.5 m from every edge) stays FREE.
+  EXPECT_EQ(mask_at(mask, 0.0, 0.0), 0) << "deep interior must stay free";
+  // Inside, 0.3 m from the +X edge → inside the band: mid-cost 65, NOT lethal.
+  EXPECT_EQ(mask_at(mask, 2.7, 0.0), 65) << "inner band must be mid-cost (traversable)";
+  // The band must not leak past the edge: just outside stays the 50 slack band.
+  EXPECT_EQ(mask_at(mask, 3.10, 0.0), 50) << "outside slack band must be unaffected";
+  // And well outside stays lethal.
+  EXPECT_EQ(mask_at(mask, 4.0, 0.0), 100) << "far outside must stay lethal";
+}
+
 // No areas defined (fresh install / empty areas.dat): the mask must NOT make
 // the whole world lethal — publish_keepout_mask early-returns and never caches
 // a mask, so the costmap sees no keepout filter mask at all (everything
