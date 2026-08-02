@@ -221,3 +221,50 @@ TEST_F(GetNextUnmowedAreaTest, SelectsMowingAreaAtIndexZero)
   EXPECT_EQ(selected, 0u);
   EXPECT_EQ(ctx->current_area, 0);
 }
+
+// Resume-cursor advance between dispatches counts as progress and resets the
+// no-progress attempt counter. Regression for the 2026-08-02 field loss:
+// sub-paths are thousands of poses, so a run of graceful guard pauses (sigma
+// spikes, boundary recoveries) advanced the cursor 14 → 546 without ever
+// completing a whole swath — the swath-only progress signal stayed flat and
+// the area was retired at "0 swath(s) completed" after kMaxAreaAttempts.
+TEST_F(GetNextUnmowedAreaTest, CursorProgressResetsAttemptCounter)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  // Well past kMaxAreaAttempts dispatches; each advances the persisted cursor
+  // by more than kMinCursorProgressPoses, as a guard-pause interruption does.
+  for (int i = 0; i < 12; ++i)
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS) << "dispatch " << i;
+    uint32_t selected = 99;
+    ASSERT_TRUE(blackboard->get("area_index", selected));
+    EXPECT_EQ(selected, 0u);
+    ctx->area_resume_pose_index[0] +=
+        BTContext::kMinCursorProgressPoses + 1;  // graceful pause saved progress
+  }
+  EXPECT_EQ(ctx->attempted_areas.count(0u), 0u)
+      << "an area whose cursor keeps advancing must never be retired";
+}
+
+// A genuinely stuck area (no swath AND no cursor progress) still retires after
+// kMaxAreaAttempts — the cursor-progress reset must not disable the give-up.
+TEST_F(GetNextUnmowedAreaTest, NoProgressStillRetiresAfterMaxAttempts)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  // Dispatches 1..kMaxAreaAttempts-1 succeed (counter 1..4); the cursor never
+  // moves. The kMaxAreaAttempts-th dispatch trips the cap, retires the area,
+  // and — with no other area — the node fails.
+  for (uint32_t i = 0; i + 1 < BTContext::kMaxAreaAttempts; ++i)
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS) << "dispatch " << i;
+  }
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
+  EXPECT_GT(ctx->attempted_areas.count(0u), 0u) << "stuck area must be retired";
+}

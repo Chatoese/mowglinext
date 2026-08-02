@@ -138,6 +138,18 @@ struct BTContext
   /// Minimum coverage_percent gain that counts as progress (resets the
   /// no-progress counter). Below this, a dispatch is treated as stuck.
   static constexpr float kAreaProgressEpsilonPct = 0.5f;
+  /// Highest resume-pose cursor seen per area this session. Drivable
+  /// sub-paths can be thousands of poses (a headland ring alone is ~1400),
+  /// so swath-completion granularity misses real forward progress: during
+  /// the 2026-08-02 sigma-spike storm the cursor advanced 14 → 546 across
+  /// five guard pauses, yet zero swaths completed and the area was retired
+  /// at "0 swath(s) completed". A cursor advance of at least
+  /// kMinCursorProgressPoses since the previous dispatch also resets the
+  /// no-progress counter. Cleared by EndSession.
+  std::map<uint32_t, std::size_t> area_last_cursor;
+  /// Minimum resume-cursor advance (poses) that counts as progress —
+  /// ~1.25 m at the 0.05 m F2C sampling, well above post-pivot jitter.
+  static constexpr std::size_t kMinCursorProgressPoses = 25;
 
   // -----------------------------------------------------------------------
   // Swath-completion model (replaces the mow_progress cell grid)

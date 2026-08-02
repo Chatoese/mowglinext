@@ -90,10 +90,26 @@ ResumeLocation resolveResumeLocation(const std::vector<nav_msgs::msg::Path>& uni
   {
     return loc;  // cursor ran past the concatenation (stale/mismatched) — fresh start
   }
+  // Landing within 2 poses of unit k's END: the remainder is a 1-2 pose stub —
+  // treat unit k as driven and resume at the NEXT unit's front. Snapping BACK
+  // to unit k's front (pre-2026-08-02 behaviour) rewound an entire sub-path:
+  // field incident — a guard pause at pose 1396 of a 1398-pose headland ring
+  // mapped the resume to (unit 0, local 0), FollowStrip's forward-window
+  // progress search then re-anchored near the ring start, and the next
+  // interruption persisted the cursor at 106/9254 (15 % → 1 % rewind).
+  if (local + 2 >= units[k].poses.size())
+  {
+    ++k;
+    if (k >= units.size())
+    {
+      return loc;  // tail stub of the LAST unit — nothing left worth resuming
+    }
+    local = 0;
+  }
   loc.valid = true;
   loc.unit = k;
-  // Only trim mid-unit when the landing offset is strictly interior; otherwise
-  // snap to the unit's front (a near-boundary trim would leave a 1-2 pose stub).
+  // Only trim mid-unit when the landing offset is strictly interior; a 1-2 pose
+  // HEAD stub still snaps to the unit's front (no rewind risk at the head).
   loc.local = (local > 0 && local + 2 < units[k].poses.size()) ? local : 0;
   return loc;
 }
@@ -1571,7 +1587,31 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
   auto last_it = ctx->area_last_coverage.find(current_area_idx_);
   const bool made_progress = (last_it == ctx->area_last_coverage.end()) ||
                              (static_cast<float>(done_swaths) > last_it->second + 0.5f);
-  if (made_progress)
+  // Pose-cursor progress ALSO resets the counter. Swath completion is far too
+  // coarse a progress signal here: one drivable sub-path can be thousands of
+  // poses (a headland ring alone ~1400), so a run of graceful interruptions
+  // (LocalizationGuard sigma pauses, boundary recoveries) that each advance
+  // the resume cursor but never finish a whole unit burned all
+  // kMaxAreaAttempts and retired the area "with 0 swath(s) completed"
+  // (2026-08-02: both zones lost to an RTK micro-jump storm this way, cursor
+  // provably advancing 14 → 546 between dispatches).
+  std::size_t cursor = 0;
+  if (auto cit = ctx->area_resume_pose_index.find(current_area_idx_);
+      cit != ctx->area_resume_pose_index.end())
+  {
+    cursor = cit->second;
+  }
+  auto lc_it = ctx->area_last_cursor.find(current_area_idx_);
+  const bool cursor_progress =
+      (lc_it != ctx->area_last_cursor.end()) &&
+      (cursor > lc_it->second + BTContext::kMinCursorProgressPoses);
+  // High-water mark, monotonic: a rewound/cleared cursor never lowers it, so
+  // oscillating around one spot cannot keep resetting the counter.
+  if (lc_it == ctx->area_last_cursor.end() || cursor > lc_it->second)
+  {
+    ctx->area_last_cursor[current_area_idx_] = cursor;
+  }
+  if (made_progress || cursor_progress)
   {
     ctx->area_last_coverage[current_area_idx_] = static_cast<float>(done_swaths);
     n = 0;

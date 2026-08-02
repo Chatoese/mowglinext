@@ -110,15 +110,40 @@ TEST(ResolveResumeLocation, UnitBoundarySnapsToFront)
   EXPECT_EQ(rl.local, 0u);  // front of unit 1, no trim
 }
 
-// A near-boundary landing (within 2 poses of a unit's end) snaps to the front
-// rather than leaving a 1-2 pose stub.
-TEST(ResolveResumeLocation, NearUnitEndSnapsToFront)
+// A near-boundary landing (within 2 poses of a unit's END) advances to the
+// NEXT unit's front — the remainder is a 1-2 pose stub, the unit is done.
+// Snapping BACK to the same unit's front (the pre-2026-08-02 behaviour this
+// test used to pin) rewound an entire sub-path in the field: a guard pause at
+// pose 1396 of a 1398-pose headland ring restarted the ring from 0 and the
+// coverage cursor collapsed from 15 % to 1 %.
+TEST(ResolveResumeLocation, NearUnitEndAdvancesToNextUnit)
 {
   const std::vector<nav_msgs::msg::Path> units{makeUnit(100), makeUnit(100)};
   const auto rl = resolveResumeLocation(units, 99, 200);  // local 99, 99 + 2 >= 100
   ASSERT_TRUE(rl.valid);
-  EXPECT_EQ(rl.unit, 0u);
+  EXPECT_EQ(rl.unit, 1u);
   EXPECT_EQ(rl.local, 0u);
+}
+
+// Field regression (2026-08-02): cursor 1396 at the tail of a 1398-pose ring,
+// second unit carries the rest of the concatenation. Must resume at unit 1's
+// front — NOT unit 0 local 0 (the full-ring rewind).
+TEST(ResolveResumeLocation, FieldRegressionRingTailDoesNotRewind)
+{
+  const std::vector<nav_msgs::msg::Path> units{makeUnit(1398), makeUnit(7856)};
+  const auto rl = resolveResumeLocation(units, 1396, 9254);
+  ASSERT_TRUE(rl.valid);
+  EXPECT_EQ(rl.unit, 1u);
+  EXPECT_EQ(rl.local, 0u);
+}
+
+// Tail stub of the LAST unit: nothing left worth resuming — fresh start.
+TEST(ResolveResumeLocation, TailStubOfLastUnitIsFreshStart)
+{
+  const std::vector<nav_msgs::msg::Path> units{makeUnit(100), makeUnit(50)};
+  // total_poses deliberately larger than the concatenation so the top-level
+  // near-end check does not short-circuit — pins the per-unit advance path.
+  EXPECT_FALSE(resolveResumeLocation(units, 149, 300).valid);
 }
 
 // A cursor past the end of the concatenation (stale / mismatched plan) is not
