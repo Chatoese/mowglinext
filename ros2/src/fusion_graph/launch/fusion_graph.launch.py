@@ -153,6 +153,12 @@ def generate_launch_description() -> LaunchDescription:
             "dock_pose_yaw": float(cfg.get("dock_pose_yaw", 0.0) or 0.0),
             "dock_pose_yaw_sigma_rad": float(
                 cfg.get("dock_pose_yaw_sigma_rad", 0.035) or 0.035),
+            # Site-tunable wrong-fix gate slack (Inv-15: override lives in the
+            # installed mowgli_robot.yaml). Some sites see benign RTK micro-jump
+            # bursts (multipath) well above the 0.05 default; rejecting them
+            # starves the graph, inflates sigma_xy and trips LocalizationGuard.
+            "rtk_wrongfix_max_jump_m": float(
+                cfg.get("rtk_wrongfix_max_jump_m", 0.05) or 0.05),
             "tf_publish_lead_s": tf_publish_lead_s,
             "node_period_s": node_period_s,
         },
