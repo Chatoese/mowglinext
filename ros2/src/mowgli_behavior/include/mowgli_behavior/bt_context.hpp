@@ -402,6 +402,16 @@ struct BTContext
   double dock_x{0.0};
   double dock_y{0.0};
   double dock_yaw{0.0};
+  /// Pre-staging waypoint distance (m) along the dock approach axis, BEHIND
+  /// the dock pose (0 = disabled). When > 0, DockRobot first navigates to
+  /// dock_pose - d·[cos(yaw), sin(yaw)] facing the dock, so the transit's
+  /// terminal in-place pivot (RotationShim rotate_to_goal_heading, up to
+  /// ~90°+ when arriving cross-axis) happens THERE instead of at the staging
+  /// pose 1.5 m in front of the dock — where the nose sweep of a rear-axle
+  /// pivot was clipping the curb stones (field 2026-08-02). The remaining
+  /// nav-to-staging leg is then a short straight along the axis with a
+  /// near-zero terminal rotation.
+  double dock_prestage_distance_m{0.0};
 
   // -----------------------------------------------------------------------
   // Legacy coverage path components (retained for potential future use).

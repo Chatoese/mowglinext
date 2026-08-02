@@ -22,6 +22,7 @@
 #include "behaviortree_cpp/bt_factory.h"
 #include "mowgli_behavior/bt_context.hpp"
 #include "nav2_msgs/action/dock_robot.hpp"
+#include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "nav2_msgs/action/undock_robot.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
@@ -43,6 +44,8 @@ class DockRobot : public BT::StatefulActionNode
 public:
   using DockAction = nav2_msgs::action::DockRobot;
   using GoalHandle = rclcpp_action::ClientGoalHandle<DockAction>;
+  using NavAction = nav2_msgs::action::NavigateToPose;
+  using NavGoalHandle = rclcpp_action::ClientGoalHandle<NavAction>;
 
   DockRobot(const std::string& name, const BT::NodeConfig& config)
       : BT::StatefulActionNode(name, config)
@@ -60,9 +63,30 @@ public:
   void onHalted() override;
 
 private:
+  /// kPrestage: NavigateToPose to the pre-staging waypoint on the dock axis
+  /// (ctx->dock_prestage_distance_m behind the dock, facing it) so the
+  /// transit's terminal in-place pivot happens away from the dock's curb
+  /// stones. kDock: the /dock_robot action itself (its internal
+  /// nav-to-staging leg is then a short straight along the axis).
+  enum class Phase
+  {
+    kPrestage,
+    kDock
+  };
+
+  /// Send the /dock_robot goal (phase kDock). Returns false if the action
+  /// server vanished (caller must fail the node).
+  bool sendDockGoal(const std::shared_ptr<BTContext>& ctx);
+
+  Phase phase_{Phase::kDock};
+  std::string dock_id_{"home_dock"};
+  std::string dock_type_{"simple_charging_dock"};
   rclcpp_action::Client<DockAction>::SharedPtr action_client_;
   std::shared_future<GoalHandle::SharedPtr> goal_handle_future_;
   GoalHandle::SharedPtr goal_handle_;
+  rclcpp_action::Client<NavAction>::SharedPtr nav_client_;
+  std::shared_future<NavGoalHandle::SharedPtr> nav_goal_future_;
+  NavGoalHandle::SharedPtr nav_goal_handle_;
 };
 
 // ---------------------------------------------------------------------------

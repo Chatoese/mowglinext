@@ -736,6 +736,18 @@ private:
     const double undock_distance = declare_parameter<double>("undock_distance", 1.0);
     blackboard_->set("undock_distance", undock_distance);
 
+    // Numeric dock pose (map frame) for BT-side geometry — fills the BTContext
+    // dock fields consumed by DockRobot's pre-staging waypoint. The legacy
+    // `dock_pose` "x;y;yaw" blackboard STRING above predates this and stays
+    // for tree compatibility; these numeric params are forwarded from
+    // mowgli_robot.yaml by full_system.launch.py (same values map_server and
+    // hardware_bridge already receive).
+    context_->dock_x = declare_parameter<double>("dock_pose_x", 0.0);
+    context_->dock_y = declare_parameter<double>("dock_pose_y", 0.0);
+    context_->dock_yaw = declare_parameter<double>("dock_pose_yaw", 0.0);
+    context_->dock_prestage_distance_m =
+        declare_parameter<double>("dock_prestage_distance_m", 0.0);
+
     // idle_nav2_suspend (default false): when true, the BT PAUSEs the Nav2
     // lifecycle stack (via SetNav2Lifecycle) while parked on the dock to cut
     // the idle CPU/thermal load of the always-looping costmaps, and RESUMEs

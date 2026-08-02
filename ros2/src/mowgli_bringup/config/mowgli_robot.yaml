@@ -318,6 +318,15 @@ mowgli:
     dock_pose_yaw: 0.0             # sim: match MowgliMower world rotation (yaw 0, facing +X/east)
     undock_distance: 1.5           # reverse distance when undocking (m); must be > 0.5 m for CalibrateHeadingFromUndock
     undock_speed: 0.16             # reverse speed (m/s) — above kMinLinVel=0.15 host clamp
+    # Pre-staging waypoint distance (m) on the dock approach axis, BEHIND the
+    # dock and facing it (0 = off). When > 0, DockRobot first navigates there,
+    # so the transit's terminal in-place pivot (up to 90°+ when arriving
+    # cross-axis) happens at this waypoint instead of at the staging pose
+    # ~1.5 m in front of the dock — useful when curb stones / walls flank the
+    # dock approach and the rear-axle pivot's nose sweep would clip them. The
+    # remaining approach is then a short straight along the axis. Must exceed
+    # dock_approach_distance to be useful (typical: 3.0).
+    dock_prestage_distance_m: 0.0
     # Distance (m) to the staging pose behind the dock — the final
     # straight-in approach runway. Injected as opennav_docking
     # simple_charging_dock.staging_x_offset = -dock_approach_distance

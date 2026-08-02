@@ -228,6 +228,16 @@ def generate_launch_description() -> LaunchDescription:
             # references in main_tree.xml. See issue #191.
             {"undock_speed": float(robot_params.get("undock_speed", 0.15))},
             {"undock_distance": float(robot_params.get("undock_distance", 1.0))},
+            # Numeric dock pose for BT-side geometry (DockRobot pre-staging
+            # waypoint) — same values map_server/hardware_bridge receive.
+            {"dock_pose_x": float(robot_params.get("dock_pose_x", 0.0))},
+            {"dock_pose_y": float(robot_params.get("dock_pose_y", 0.0))},
+            {"dock_pose_yaw": float(robot_params.get("dock_pose_yaw", 0.0))},
+            # Pre-staging waypoint distance on the dock axis (0 = off): moves
+            # the transit's terminal in-place pivot away from the dock
+            # surroundings (curb stones) — see DockRobot::onStart.
+            {"dock_prestage_distance_m": float(
+                robot_params.get("dock_prestage_distance_m", 0.0))},
             # idle_nav2_suspend: PAUSE the Nav2 lifecycle stack while parked on
             # the dock to cut idle CPU/thermal load (costmaps stop looping).
             # Default off — a deliberate per-site opt-in. RESUME is guaranteed
