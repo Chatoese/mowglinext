@@ -496,13 +496,20 @@ def generate_launch_description() -> LaunchDescription:
                 "port": foxglove_port,
                 "address": "0.0.0.0",
                 "send_buffer_limit": 10000000,
-                "num_threads": 2,
+                # 1 (was 2): one asio handler thread is plenty for one GUI
+                # backend + an occasional Studio session at ~250 KB/s, and
+                # every extra thread costs scheduler overhead on the 4-core
+                # Pi (the bridge averaged ~5 % CPU, #4 in the container).
+                "num_threads": 1,
                 "topic_whitelist": [internal_gnss_topic_whitelist],
                 "client_topic_whitelist": [internal_gnss_topic_whitelist],
                 "capabilities": [
                     "clientPublish",
                     "services",
-                    "connectionGraph",
+                    # connectionGraph DROPPED (2026-08-03): only Foxglove
+                    # Studio's topology panel uses it, and a subscribed
+                    # client makes the bridge poll the FULL ROS graph every
+                    # second. The mowgli GUI never subscribes it.
                     # Allow Foxglove Studio to read AND set ROS parameters live
                     # (e.g. tuning controller_server / coverage critics in the
                     # field). param_whitelist (default '.*') gates which params.
