@@ -76,7 +76,27 @@ def generate_launch_description() -> LaunchDescription:
                 "port": port,
                 "address": "0.0.0.0",
                 "send_buffer_limit": send_buffer_limit,
-                "num_threads": 0,
+                # 1 (was 0 = one asio thread per core, i.e. 4 on the Pi).
+                # The bridge serves one GUI backend plus an occasional
+                # Foxglove Studio session at ~250 KB/s — a single handler
+                # thread is plenty, and 3 fewer threads means measurably
+                # less scheduler/context-switch overhead on the 4-core Pi
+                # (the bridge sat at ~5 % average CPU, #4 in the container).
+                "num_threads": 1,
+                # Capability trim: the mowgli GUI backend uses subscribe,
+                # clientPublish (teleop), services (map editing) and
+                # parameters/parametersSubscribe (Settings page) — keep all
+                # of those. Dropped: connectionGraph (only Foxglove Studio's
+                # topology panel; subscribing it makes the bridge poll the
+                # FULL ROS graph every second) and assets (URDF fetch — the
+                # GUI's chassis preview reads the robotDescription TOPIC,
+                # not the asset capability).
+                "capabilities": [
+                    "clientPublish",
+                    "parameters",
+                    "parametersSubscribe",
+                    "services",
+                ],
             },
         ],
     )
