@@ -476,12 +476,18 @@ TEST_F(AreaTypeTest, KeepoutMaskInnerCostBandPenalisesBoundaryHugging)
 
   // Deep interior (> 0.5 m from every edge) stays FREE.
   EXPECT_EQ(mask_at(mask, 0.0, 0.0), 0) << "deep interior must stay free";
-  // Inside, 0.3 m from the +X edge → inside the band: mid-cost 65, NOT lethal.
-  EXPECT_EQ(mask_at(mask, 2.7, 0.0), 65) << "inner band must be mid-cost (traversable)";
+  // Inside, 0.3 m from the +X edge → inside the band: mid-cost 40, NOT lethal.
+  EXPECT_EQ(mask_at(mask, 2.7, 0.0), 40) << "inner band must be mid-cost (traversable)";
   // The band must not leak past the edge: just outside stays the 50 slack band.
   EXPECT_EQ(mask_at(mask, 3.10, 0.0), 50) << "outside slack band must be unaffected";
   // And well outside stays lethal.
   EXPECT_EQ(mask_at(mask, 4.0, 0.0), 100) << "far outside must stay lethal";
+  // COST ORDERING REGRESSION (field bug 2026-08-03): the inner band must be
+  // strictly CHEAPER than the outside slack band, or Smac routes zone
+  // transits through the 0.40 m band OUTSIDE the polygon (65 > 50 did
+  // exactly that — the mower drove outside the area).
+  EXPECT_LT(mask_at(mask, 2.7, 0.0), mask_at(mask, 3.10, 0.0))
+      << "inner band must be cheaper than the outside slack band";
 }
 
 // No areas defined (fresh install / empty areas.dat): the mask must NOT make

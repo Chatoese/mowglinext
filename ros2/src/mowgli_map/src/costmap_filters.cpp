@@ -48,14 +48,20 @@ constexpr int8_t kOutsideSlackMaskCost = 50;
 // boundary_inner_margin_m shrunk-polygon rule (LETHAL), this band must stay
 // traversable: TransitToStrip goals (headland-ring starts) sit ~0.1-0.3 m from
 // the polygon edge, and a lethal band there fails Smac with "Goal occupied".
-// 65 maps to cost ~165 via the base=0/multiplier=1 filter info — well below
-// INSCRIBED (253), so A* routes THROUGH the band only when no cheaper interior
-// route exists. Effect on a zone-connecting corridor: both edges carry the
-// band, the middle stays free (0), and the transit path centres itself instead
-// of hugging the boundary (field incident 2026-08-02: shortest-path transit
-// planned flush with the corridor edge; downhill side-slip on the lateral
-// slope pushed the mower over the line within seconds).
-constexpr int8_t kInnerCostBandMaskCost = 65;
+// Effect on a zone-connecting corridor: both edges carry the band, the middle
+// stays free (0), and the transit path centres itself instead of hugging the
+// boundary (field incident 2026-08-02: shortest-path transit planned flush
+// with the corridor edge; downhill side-slip on the lateral slope pushed the
+// mower over the line within seconds).
+//
+// The value MUST stay BELOW kOutsideSlackMaskCost (50): the ordering the
+// planner must see is
+//   interior (0)  <  inner band (40)  <  outside slack (50)  <  lethal (100)
+// so hugging the inside edge is always cheaper than stepping outside the
+// polygon. The first field version used 65 — ABOVE the outside slack — and
+// Smac promptly planned zone transits THROUGH the 0.40 m outside band
+// (cheaper!), driving the mower outside the area (field bug 2026-08-03).
+constexpr int8_t kInnerCostBandMaskCost = 40;
 
 void MapServerNode::publish_keepout_mask()
 {
