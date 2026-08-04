@@ -280,6 +280,7 @@ GraphStats GraphManager::Stats() const
   s.icp_rejects_divergence = stats_icp_rejects_divergence_;
   s.stationary_hand_push = stats_hand_push_;
   s.slip_veto = stats_slip_veto_;
+  s.cov_exceptions = stats_cov_exceptions_;
   s.residual_ema_rad = residual_ema_;
   s.wheel_sigma_x_eff = last_wheel_sigma_x_eff_;
   s.gyro_bias_z = gyro_bias_z_;

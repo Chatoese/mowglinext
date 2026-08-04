@@ -33,9 +33,28 @@ struct GraphParams
 
   // Wheel between-factor noise (sigmas, body-frame). Tight vy enforces
   // non-holonomic motion.
-  double wheel_sigma_x = 0.05;  // m per node @ 10 Hz
+  double wheel_sigma_x = 0.05;  // m per node @ 10 Hz — LEGACY fixed model,
+                                // only used when wheel_sigma_x_per_m <= 0
   double wheel_sigma_y = 0.005;  // m per node — non-holo
   double wheel_sigma_theta = 0.01;  // rad per node
+
+  // Distance-proportional σ_x model (wheel_noise.hpp) — replaces the fixed
+  // per-node wheel_sigma_x / pivot_wheel_sigma_x when > 0 (default ON).
+  // Rationale + field incident 2026-08-04 in wheel_noise.hpp: the fixed
+  // per-node σ made the marginal covariance random-walk to 0.5-1.8 m within
+  // seconds of a couple of gate-rejected fixes (metres/s during pivots),
+  // tripping LocalizationGuard while the receiver accuracy sat at 1.1 cm.
+  // 0.5 = σ is 50 % of the reported per-node travel — still 25-50× more
+  // pessimistic than physical encoder drift (1-2 % of distance), so GPS
+  // keeps dominating, but a multi-second GPS gap now costs centimetres of
+  // σ, not metres. Set to 0 to restore the legacy fixed model.
+  double wheel_sigma_x_per_m = 0.5;
+  // Pivot regime: the wheels' phantom forward component IS the reported
+  // translation, so the coefficient must be ≥ 1 to cover a fully fictional
+  // delta; 3.0 keeps the 2026-05-27 stuck-rotate protection with margin.
+  double pivot_wheel_sigma_x_per_m = 3.0;
+  // Lower bound — encoder quantisation / stationary jitter.
+  double wheel_sigma_x_floor_m = 0.002;
 
   // Gyro yaw between-factor noise (overrides wheel_sigma_theta when used).
   double gyro_sigma_theta = 0.005;  // rad per node — gyro is much

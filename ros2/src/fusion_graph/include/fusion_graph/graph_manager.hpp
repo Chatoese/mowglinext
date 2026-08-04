@@ -74,6 +74,8 @@ struct GraphStats
   uint64_t icp_rejects_divergence = 0;  // result far from initial guess
   uint64_t stationary_hand_push = 0;  // wheel stationary but gyro disagrees
   uint64_t slip_veto = 0;  // ticks where wheel translation was vetoed by gyro
+  uint64_t cov_exceptions = 0;  // marginalCovariance() threw — last good
+                                // marginal reused (was: silent σ=1 m fallback)
   // Adaptive process-noise telemetry. residual_ema_rad is the
   // current EMA-smoothed |dtheta_wheel - dtheta_gyro| (rad);
   // wheel_sigma_x_eff is the inflated σ_x actually used for the most
@@ -468,6 +470,7 @@ private:
   uint64_t stats_icp_rejects_divergence_ = 0;
   uint64_t stats_hand_push_ = 0;
   uint64_t stats_slip_veto_ = 0;
+  uint64_t stats_cov_exceptions_ = 0;
   // Count of iSAM2 indeterminate-system catches that triggered a graph
   // reset (instead of aborting the node). Nonzero = the graph hit an
   // ill-posed state and self-healed; investigate if it climbs.

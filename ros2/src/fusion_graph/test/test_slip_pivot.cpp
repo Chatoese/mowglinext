@@ -36,6 +36,9 @@ fg::GraphParams MakeParams()
   // spacing, so one node is created per Tick as before).
   gp.node_period_s = fg::kTunedNodePeriodS;  // 0.04
   gp.wheel_sigma_x = 0.05;
+  // Pin the LEGACY fixed-σ model these tests were written against; the
+  // distance-proportional default is covered by test_wheel_noise.cpp.
+  gp.wheel_sigma_x_per_m = 0.0;
   gp.wheel_sigma_y = 0.005;
   gp.wheel_sigma_theta = 0.01;
   gp.gyro_sigma_theta = 0.005;

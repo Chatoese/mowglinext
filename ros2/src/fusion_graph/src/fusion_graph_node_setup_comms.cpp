@@ -370,6 +370,7 @@ void FusionGraphNode::SetupCommunications(double node_period_s)
                               std::to_string(stats.icp_rejects_divergence));
                           add("stationary_hand_push", std::to_string(stats.stationary_hand_push));
                           add("slip_veto", std::to_string(stats.slip_veto));
+                          add("cov_exceptions", std::to_string(stats.cov_exceptions));
                           add("live_nodes", std::to_string(graph_->LiveNodeCount()));
                           // Gyro bias telemetry (item #3).
                           {

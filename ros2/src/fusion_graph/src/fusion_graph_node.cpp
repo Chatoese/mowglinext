@@ -31,6 +31,11 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   gp.node_period_s = declare_parameter<double>("node_period_s", 0.1);
   gp.wheel_sigma_x = declare_parameter<double>("wheel_sigma_x", 0.05);
   gp.wheel_sigma_y = declare_parameter<double>("wheel_sigma_y", 0.005);
+  // Distance-proportional σ_x model (wheel_noise.hpp); > 0 = active (default).
+  gp.wheel_sigma_x_per_m = declare_parameter<double>("wheel_sigma_x_per_m", 0.5);
+  gp.pivot_wheel_sigma_x_per_m =
+      declare_parameter<double>("pivot_wheel_sigma_x_per_m", 3.0);
+  gp.wheel_sigma_x_floor_m = declare_parameter<double>("wheel_sigma_x_floor_m", 0.002);
   gp.wheel_sigma_theta = declare_parameter<double>("wheel_sigma_theta", 0.01);
   gp.gyro_sigma_theta = declare_parameter<double>("gyro_sigma_theta", 0.005);
   gp.gps_sigma_floor = declare_parameter<double>("gps_sigma_floor", 0.003);

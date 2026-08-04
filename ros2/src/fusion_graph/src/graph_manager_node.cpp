@@ -16,6 +16,7 @@
 
 #include "fusion_graph/factors.hpp"
 #include "fusion_graph/graph_manager.hpp"
+#include "fusion_graph/wheel_noise.hpp"
 #include <gtsam/base/GenericValue.h>
 #include <gtsam/base/serialization.h>
 #include <gtsam/linear/NoiseModel.h>
@@ -234,10 +235,29 @@ std::optional<TickOutput> GraphManager::CreateNodeLocked(double now_s)
   // comment) so swap to a loose sigma and let GPS / scan-matching
   // constrain XY. Gating on the gyro (not wheel-derived) dtheta
   // avoids feedback from the same encoder that's misreporting.
-  double wheel_sigma_x_eff =
-      std::abs(accum_.dtheta_gyro) > params_.pivot_gate_dtheta_rad * tick_scale
-          ? params_.pivot_wheel_sigma_x
-          : params_.wheel_sigma_x;
+  const bool pivoting =
+      std::abs(accum_.dtheta_gyro) > params_.pivot_gate_dtheta_rad * tick_scale;
+  double wheel_sigma_x_eff;
+  if (params_.wheel_sigma_x_per_m > 0.0)
+  {
+    // Distance-proportional model (default, wheel_noise.hpp): σ_x scales
+    // with the RAW reported translation this node — pre-veto, because during
+    // a pivot the phantom forward component IS the reported distance and the
+    // σ must cover the whole lie. Fixes the 2026-08-04 field incident where
+    // the fixed per-node σ blew the marginal covariance to 0.5-1.8 m within
+    // a couple of gate-rejected fixes and LocalizationGuard paused mowing at
+    // 1.1 cm actual receiver accuracy.
+    wheel_sigma_x_eff = DistanceScaledWheelSigmaX(std::hypot(accum_.dx, accum_.dy),
+                                                  pivoting,
+                                                  params_.wheel_sigma_x_per_m,
+                                                  params_.pivot_wheel_sigma_x_per_m,
+                                                  params_.wheel_sigma_x_floor_m);
+  }
+  else
+  {
+    // Legacy fixed per-node model.
+    wheel_sigma_x_eff = pivoting ? params_.pivot_wheel_sigma_x : params_.wheel_sigma_x;
+  }
 
   // Adaptive σ_x inflation from wheel↔gyro residual EMA. Skipped
   // entirely when adaptive_noise_enabled_gain == 0 (the parameter
@@ -436,12 +456,24 @@ std::optional<TickOutput> GraphManager::CreateNodeLocked(double now_s)
     try
     {
       cov = isam_.marginalCovariance(k_curr);
+      ticks_since_cov_ = 0;
     }
     catch (const std::exception&)
     {
-      // leave conservative default
+      // iSAM2 throws sporadically here mid-relinearisation. The old code
+      // silently fell back to the Identity default above — σ_xy = 1.0 m —
+      // which fed LocalizationGuard a phantom degradation while the actual
+      // estimate was centimetre-accurate (part of the 2026-08-04 pause-storm
+      // incident). Reuse the last GOOD marginal instead (it is at most
+      // cov_update_every_n ticks old) and retry on the NEXT tick rather than
+      // waiting a full refresh period; surface the event via the
+      // cov_exceptions diagnostics counter instead of hiding it.
+      ++stats_cov_exceptions_;
+      if (latest_)
+      {
+        cov = latest_->covariance;
+      }
     }
-    ticks_since_cov_ = 0;
   }
   else if (latest_)
   {

@@ -192,6 +192,11 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_rtk_wrongfix_gate fusion_graph_core)
 
+  ament_add_gtest(test_wheel_noise
+    test/test_wheel_noise.cpp
+  )
+  target_link_libraries(test_wheel_noise fusion_graph_core)
+
   ament_add_gtest(test_cog_flip_recovery
     test/test_cog_flip_recovery.cpp
   )

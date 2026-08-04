@@ -34,6 +34,10 @@ fg::GraphParams MakeParams()
   fg::GraphParams gp;
   gp.node_period_s = 0.1;
   gp.wheel_sigma_x = 0.05;
+  // These tests pin the LEGACY fixed-σ baseline the adaptive term layers on;
+  // the distance-proportional default would move the baseline with speed.
+  // The distance model has its own coverage in test_wheel_noise.cpp.
+  gp.wheel_sigma_x_per_m = 0.0;
   gp.wheel_sigma_y = 0.005;
   gp.wheel_sigma_theta = 0.01;
   gp.gyro_sigma_theta = 0.005;

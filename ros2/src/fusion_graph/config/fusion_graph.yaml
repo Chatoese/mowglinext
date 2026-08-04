@@ -40,8 +40,20 @@ fusion_graph_node:
     # ── Wheel between-factor noise ─────────────────────────────────────
     # Per-node sigmas in body frame. wheel_sigma_y << wheel_sigma_x is
     # the non-holonomic constraint: the robot doesn't slide sideways.
-    wheel_sigma_x: 0.05         # m
+    wheel_sigma_x: 0.05         # m — LEGACY fixed model, only used when
+                                # wheel_sigma_x_per_m <= 0
     wheel_sigma_y: 0.005        # m — tight non-holo
+    # Distance-proportional σ_x (default model, see wheel_noise.hpp). The
+    # fixed 0.05 m/node above — sized for 10 Hz, run at 25 Hz — let the
+    # marginal covariance random-walk to 0.5-1.8 m within a couple of
+    # gate-rejected fixes (metres/s during pivots): LocalizationGuard then
+    # paused mowing at 1.1 cm actual receiver accuracy and burned whole
+    # areas (field 2026-08-04). σ_x = max(floor, k · reported travel/node);
+    # pivot coefficient ≥ 1 covers the phantom-forward-vx lie entirely.
+    # Set wheel_sigma_x_per_m: 0.0 to restore the legacy fixed model.
+    wheel_sigma_x_per_m: 0.5
+    pivot_wheel_sigma_x_per_m: 3.0
+    wheel_sigma_x_floor_m: 0.002
     wheel_sigma_theta: 0.01     # rad — used only when no gyro this tick
 
     # ── Gyro yaw between-factor noise ──────────────────────────────────
