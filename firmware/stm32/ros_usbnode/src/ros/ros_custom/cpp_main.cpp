@@ -1308,6 +1308,11 @@ extern "C" void broadcast_handler() {
       if (Emergency_WheelLiftBlue() || Emergency_WheelLiftRed()) {
         emergency_bits |= EMERGENCY_BIT_LIFT;
       }
+      /* Latched tilt (mechanical OR accelerometer low-Z). Reads the internal
+       * latch, never the live INT1 (whose read-accessor unlatches it). */
+      if (Emergency_TiltTriggered()) {
+        emergency_bits |= EMERGENCY_BIT_TILT;
+      }
     }
     status_pkt.emergency_bitmask = emergency_bits;
 

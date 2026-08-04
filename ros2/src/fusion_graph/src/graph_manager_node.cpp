@@ -235,8 +235,7 @@ std::optional<TickOutput> GraphManager::CreateNodeLocked(double now_s)
   // comment) so swap to a loose sigma and let GPS / scan-matching
   // constrain XY. Gating on the gyro (not wheel-derived) dtheta
   // avoids feedback from the same encoder that's misreporting.
-  const bool pivoting =
-      std::abs(accum_.dtheta_gyro) > params_.pivot_gate_dtheta_rad * tick_scale;
+  const bool pivoting = std::abs(accum_.dtheta_gyro) > params_.pivot_gate_dtheta_rad * tick_scale;
   double wheel_sigma_x_eff;
   if (params_.wheel_sigma_x_per_m > 0.0)
   {

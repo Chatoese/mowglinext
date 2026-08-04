@@ -15,6 +15,7 @@ int Emergency_StopButtonWhite(void);
 int Emergency_WheelLiftBlue(void);
 int Emergency_WheelLiftRed(void);
 int Emergency_LowZAccelerometer(void);
+int Emergency_TiltTriggered(void);
 void EmergencyController(void);
 void Emergency_Init(void);
 /* Runtime emergency-sensor timeouts (PKT_ID_SET_SAFETY_LIMITS). The four trip

@@ -15,9 +15,9 @@ namespace fg = fusion_graph;
 
 namespace
 {
-constexpr double kPerM = 0.5;       // straight-driving coefficient
+constexpr double kPerM = 0.5;  // straight-driving coefficient
 constexpr double kPivotPerM = 3.0;  // pivot coefficient (covers phantom vx)
-constexpr double kFloor = 0.002;    // m
+constexpr double kFloor = 0.002;  // m
 }  // namespace
 
 // Stationary: no reported travel → σ pinned to the floor, NOT a fixed 5 cm.

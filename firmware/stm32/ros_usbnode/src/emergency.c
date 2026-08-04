@@ -181,6 +181,22 @@ int Emergency_LowZAccelerometer(void)
    return(I2C_TestZLowINT());
 }
 
+/**
+ * @brief Latched TILT emergency (mechanical tilt switch OR accelerometer
+ * low-Z), as decided by EmergencyController after the tilt debounce.
+ * Deliberately reads the internal latch and NOT the live sensors:
+ * I2C_TestZLowINT() UNLATCHES the hardware INT1 on read, so polling the
+ * live accessor from the status-packet path would race EmergencyController
+ * out of its own trigger. Used to raise EMERGENCY_BIT_TILT on the wire so
+ * the host can attribute a trip to tilt instead of guessing (2026-08-04:
+ * tilt trips reached the GUI as bare "Latched" / were mis-read as lift).
+ * @retval 1 if the tilt emergency is latched, 0 otherwise
+ */
+int Emergency_TiltTriggered(void)
+{
+   return (emergency_state & 0b100000) != 0;
+}
+
 /*
  * Manages the emergency sensors
  */

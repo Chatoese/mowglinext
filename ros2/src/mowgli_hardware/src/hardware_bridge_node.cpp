@@ -1222,7 +1222,26 @@ private:
       msg.stamp = stamp;
       const bool stop_active = (pkt.emergency_bitmask & EMERGENCY_BIT_STOP) != 0u;
       const bool lift_active = (pkt.emergency_bitmask & EMERGENCY_BIT_LIFT) != 0u;
+      const bool tilt_active = (pkt.emergency_bitmask & EMERGENCY_BIT_TILT) != 0u;
       const bool latch_active = (pkt.emergency_bitmask & EMERGENCY_BIT_LATCH) != 0u;
+
+      // Attribution logging (2026-08-04): the normal emergency path used to
+      // produce NO log line at all, so a field trip could not be attributed
+      // afterwards (the Emergency topic is not recorded). Log every bitmask
+      // TRANSITION with the raw bits — onset, sensor changes within a latch,
+      // and release — throttled by change, not time.
+      if (pkt.emergency_bitmask != last_emergency_bitmask_)
+      {
+        RCLCPP_WARN(get_logger(),
+                    "Emergency bitmask change: 0x%02X -> 0x%02X (stop=%d lift=%d tilt=%d latch=%d)",
+                    last_emergency_bitmask_,
+                    pkt.emergency_bitmask,
+                    stop_active,
+                    lift_active,
+                    tilt_active,
+                    latch_active);
+        last_emergency_bitmask_ = pkt.emergency_bitmask;
+      }
 
       if (lift_recovery_mode_ && lift_active && !stop_active)
       {
@@ -1257,7 +1276,7 @@ private:
       else
       {
         // Normal mode or stop button: full emergency
-        msg.active_emergency = stop_active || lift_active;
+        msg.active_emergency = stop_active || lift_active || tilt_active;
         msg.latched_emergency = latch_active;
         fw_latched_emergency_ = latch_active;
         msg.lift_warning = false;
@@ -1265,6 +1284,12 @@ private:
 
         if (stop_active)
           msg.reason = "STOP button";
+        else if (tilt_active)
+          // Distinct from lift since EMERGENCY_BIT_TILT (2026-08-04):
+          // mechanical tilt switch or accelerometer low-Z shock latch —
+          // previously reached the GUI as bare "Latched" and field trips
+          // were mis-attributed to the wheel-lift sensors.
+          msg.reason = "Tilt detected (IMU/mechanical)";
         else if (lift_active)
           msg.reason = "Lift detected";
         else if (latch_active)
@@ -2608,6 +2633,8 @@ private:
   // mode-inference fallback in on_cmd_vel (task #18): stray velocity traffic
   // must never auto-promote HL_MODE while the firmware has a latch asserted.
   bool fw_latched_emergency_{false};
+  // Last raw wire emergency bitmask — attribution logging fires on change.
+  uint8_t last_emergency_bitmask_{0u};
 
   // Lift recovery mode: blade off on lift, no emergency, auto-resume
   bool lift_recovery_mode_{false};

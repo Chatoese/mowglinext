@@ -168,6 +168,14 @@ extern "C"
 /** Wheel-lift emergency is active. */
 #define EMERGENCY_BIT_LIFT (1u << 2u)
 
+/** Tilt emergency is active (mechanical tilt switch OR accelerometer
+ * low-Z latch). Added 2026-08-04: without this bit a tilt-latched
+ * emergency reached the host as bare EMERGENCY_BIT_LATCH and the GUI
+ * could not distinguish an IMU/tilt trip from a wheel lift — field
+ * incidents were mis-attributed to the lift sensors. Old hosts ignore
+ * the bit (additive, packet layout unchanged). */
+#define EMERGENCY_BIT_TILT (1u << 3u)
+
   /* ---------------------------------------------------------------------------
    * Reset cause values  (pkt_reset_cause_t::reset_cause)
    * ---------------------------------------------------------------------------*/
