@@ -201,6 +201,19 @@ def generate_launch_description() -> LaunchDescription:
             {"dock_pose_y": float(robot_params.get("dock_pose_y", 0.0))},
             {"dock_pose_yaw": float(robot_params.get("dock_pose_yaw", 0.0))},
             {"imu_yaw": float(robot_params.get("imu_yaw", 0.0))},
+            # Emergency trip timeouts — documented as operator-tunable in the
+            # mowgli_robot.yaml template since forever, but never actually
+            # forwarded: the bridge silently ran its compiled defaults
+            # (discovered 2026-08-05 when a site override did not arrive).
+            # SAFETY: the firmware clamps each trip to [10 ms, compiled
+            # ceiling] — the wire can shorten a trip but never exceed the
+            # ceiling, so a mis-set yaml cannot weaken the e-stop beyond
+            # what the flashed firmware allows.
+            {"one_wheel_lift_emergency_ms": int(
+                robot_params.get("one_wheel_lift_emergency_ms", 2000))},
+            {"both_wheels_lift_emergency_ms": int(
+                robot_params.get("both_wheels_lift_emergency_ms", 1000))},
+            {"tilt_emergency_ms": int(robot_params.get("tilt_emergency_ms", 500))},
             # Wheel odometry kinematics — single source of truth in
             # mowgli_robot.yaml. hardware_bridge uses ticks_per_meter for
             # host-side odometry and also re-sends it to the STM32 so the
