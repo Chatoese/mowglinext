@@ -84,12 +84,24 @@
 
 /* --- Emergency-sensor timeouts [ms] ----------------------------------------
  * ONE_WHEEL_LIFT blessed 2026-07-18 to 2000 (board.h value); the GUI form
- * default was 10000 and is being brought into line. Safety-relevant. */
+ * default was 10000 and is being brought into line. Safety-relevant.
+ *
+ * SAFETY NOTE (2026-08-04): these compiled values are the CEILING of the
+ * runtime clamp in emergency.c (the wire can only shorten a trip, never
+ * lengthen it past the compiled value). Ceilings raised 2000→4000 /
+ * 1000→2000 so operators on rough terrain can OPT IN to a longer lift
+ * debounce via mowgli_robot.yaml — field report: pothole crossings at
+ * mowing speed unload a wheel long enough to trip the 2 s single-wheel
+ * emergency mid-lawn. The DEFAULT runtime behaviour is unchanged: the
+ * template mowgli_robot.yaml still wires 2000/1000, so every robot keeps
+ * the old trip times unless its operator explicitly raises them. A lifted
+ * wheel with a spinning blade is the scenario this timeout guards — any
+ * further ceiling raise needs a matching hazard argument here. */
 #ifndef ONE_WHEEL_LIFT_EMERGENCY_MILLIS
-#define ONE_WHEEL_LIFT_EMERGENCY_MILLIS 2000
+#define ONE_WHEEL_LIFT_EMERGENCY_MILLIS 4000
 #endif
 #ifndef BOTH_WHEELS_LIFT_EMERGENCY_MILLIS
-#define BOTH_WHEELS_LIFT_EMERGENCY_MILLIS 1000
+#define BOTH_WHEELS_LIFT_EMERGENCY_MILLIS 2000
 #endif
 #ifndef TILT_EMERGENCY_MILLIS
 #define TILT_EMERGENCY_MILLIS 500 /* mechanical + accelerometer detection */
