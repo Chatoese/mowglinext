@@ -102,6 +102,9 @@ constexpr uint8_t STATUS_BIT_UI_AVAIL = (1u << 7u);
 constexpr uint8_t EMERGENCY_BIT_LATCH = (1u << 0u);
 constexpr uint8_t EMERGENCY_BIT_STOP = (1u << 1u);
 constexpr uint8_t EMERGENCY_BIT_LIFT = (1u << 2u);
+// Tilt emergency (mechanical switch OR accelerometer low-Z latch). Added
+// 2026-08-04 alongside the firmware/mowgli_protocol.h define — keep in sync.
+constexpr uint8_t EMERGENCY_BIT_TILT = (1u << 3u);
 
 // ---------------------------------------------------------------------------
 // Reset cause constants (ll_reset_cause::reset_cause)
