@@ -22,6 +22,7 @@
 
 #include "action_msgs/msg/goal_status.hpp"
 #include "mowgli_behavior/coverage_persistence.hpp"
+#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "tf2/exceptions.h"
 
 namespace mowgli_behavior
@@ -29,6 +30,36 @@ namespace mowgli_behavior
 
 namespace
 {
+
+/// SendGoalOptions for a NavigateToPose dispatch that record the result's
+/// error_code into BTContext::last_nav_error_code and flag an ENVIRONMENTAL
+/// dispatch failure when the planner rejected the robot's OWN start cell
+/// (START_OCCUPIED, propagated from ComputePathToPose into the NavigateToPose
+/// result via bt_navigator's "compute_path" error_code_name_prefixes entry).
+/// GetNextUnmowedArea consumes the flag so such failures don't burn the area's
+/// attempt budget. The callback runs on ctx->node's default MutuallyExclusive
+/// callback group and is therefore serialized with the BT tick (see the
+/// context_mutex doc in bt_context.hpp); it can land a tick or two after the
+/// goal-status poll reports ABORTED, which is fine — the consumer only reads
+/// the flag after a further service round-trip.
+rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SendGoalOptions
+navErrorRecordingOptions(const std::shared_ptr<BTContext>& ctx)
+{
+  using NavigateToPose = nav2_msgs::action::NavigateToPose;
+  rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;
+  options.result_callback =
+      [ctx](const rclcpp_action::ClientGoalHandle<NavigateToPose>::WrappedResult& result)
+  {
+    const uint16_t error_code = result.result ? result.result->error_code : 0u;
+    ctx->last_nav_error_code = error_code;
+    if (result.code == rclcpp_action::ResultCode::ABORTED &&
+        error_code == nav2_msgs::action::ComputePathToPose::Result::START_OCCUPIED)
+    {
+      ctx->env_dispatch_failure = true;
+    }
+  };
+  return options;
+}
 
 /// Plan-geometry fingerprint of the drivable units (FNV-1a 64-bit over every
 /// unit's pose count and each pose position quantized to mm). Any change of mow
@@ -661,7 +692,7 @@ bool FollowStrip::sendCurrentSwath(const std::shared_ptr<BTContext>& ctx)
     nav_goal.pose.header.frame_id = "map";
     nav_goal.pose.header.stamp = ctx->node->get_clock()->now();
     nav_handle_.reset();
-    nav_future_ = nav_client_->async_send_goal(nav_goal);
+    nav_future_ = nav_client_->async_send_goal(nav_goal, navErrorRecordingOptions(ctx));
     transit_active_ = true;
     swath_goal_sent_ = true;
     RCLCPP_INFO(ctx->node->get_logger(),
@@ -1156,7 +1187,7 @@ BT::NodeStatus TransitToStrip::onStart()
   goal.pose = ctx->current_transit_goal;
 
   nav_handle_.reset();
-  nav_future_ = nav_client_->async_send_goal(goal);
+  nav_future_ = nav_client_->async_send_goal(goal, navErrorRecordingOptions(ctx));
 
   RCLCPP_INFO(ctx->node->get_logger(),
               "TransitToStrip: navigating to (%.2f, %.2f)",
@@ -1615,7 +1646,48 @@ BT::NodeStatus GetNextUnmowedArea::processResponse()
     ctx->area_last_coverage[current_area_idx_] = static_cast<float>(done_swaths);
     n = 0;
   }
-  n++;
+  // Environmental-failure exemption: when the most recent nav dispatch failed
+  // because the planner rejected the robot's OWN start cell (START_OCCUPIED —
+  // recorded by navErrorRecordingOptions), the failure says nothing about this
+  // area's mowability, so it must not burn the attempt budget. 2026-08-09: an
+  // RTK-degradation window parked the fused pose inside the boundary
+  // inflation and every area retired its full budget in seconds on instant
+  // 205-rejections without the robot ever moving. Bounded per area by
+  // kMaxEnvFailuresPerArea so a permanently-lethal pose (bad dock placement,
+  // wrong keepout) cannot spin the dispatch loop forever — past the budget,
+  // environmental failures count as normal attempts again.
+  bool count_this_dispatch = true;
+  if (ctx->env_dispatch_failure)
+  {
+    ctx->env_dispatch_failure = false;
+    auto& env_n = ctx->area_env_failure_count[current_area_idx_];
+    if (env_n < BTContext::kMaxEnvFailuresPerArea)
+    {
+      ++env_n;
+      count_this_dispatch = false;
+      RCLCPP_WARN(ctx->node->get_logger(),
+                  "GetNextUnmowedArea: last nav dispatch failed environmentally "
+                  "(nav error %u — planner rejected the robot's own start cell); "
+                  "not counting toward area %u attempts (env failure %u/%u)",
+                  ctx->last_nav_error_code,
+                  current_area_idx_,
+                  env_n,
+                  BTContext::kMaxEnvFailuresPerArea);
+    }
+    else
+    {
+      RCLCPP_WARN(ctx->node->get_logger(),
+                  "GetNextUnmowedArea: area %u exhausted its environmental-failure "
+                  "budget (%u) — counting further START_OCCUPIED failures as normal "
+                  "attempts",
+                  current_area_idx_,
+                  BTContext::kMaxEnvFailuresPerArea);
+    }
+  }
+  if (count_this_dispatch)
+  {
+    n++;
+  }
   if (n >= BTContext::kMaxAreaAttempts)
   {
     ctx->attempted_areas.insert(current_area_idx_);

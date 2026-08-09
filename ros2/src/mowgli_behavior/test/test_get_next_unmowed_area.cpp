@@ -268,3 +268,55 @@ TEST_F(GetNextUnmowedAreaTest, NoProgressStillRetiresAfterMaxAttempts)
   EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
   EXPECT_GT(ctx->attempted_areas.count(0u), 0u) << "stuck area must be retired";
 }
+
+// Environmental dispatch failures (planner rejected the robot's OWN start
+// cell, START_OCCUPIED) must not burn the area's attempt budget. Regression
+// for the 2026-08-09 field loss: an RTK-degradation window parked the fused
+// pose inside the boundary inflation and every area retired its full budget
+// in seconds on instant 205-rejections without the robot ever moving.
+TEST_F(GetNextUnmowedAreaTest, EnvironmentalFailureDoesNotBurnAttempts)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  // Well past kMaxAreaAttempts dispatches, each preceded by an environmental
+  // nav failure (as the nav result callback records it). No progress signals.
+  for (uint32_t i = 0; i < BTContext::kMaxAreaAttempts + 5; ++i)
+  {
+    ctx->env_dispatch_failure = true;
+    ctx->last_nav_error_code = 205;  // START_OCCUPIED
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS) << "dispatch " << i;
+    EXPECT_FALSE(ctx->env_dispatch_failure) << "flag must be consumed per dispatch";
+  }
+  EXPECT_EQ(ctx->attempted_areas.count(0u), 0u)
+      << "environmental failures must not retire the area";
+  EXPECT_EQ(ctx->area_attempt_count[0u], 0u);
+}
+
+// The environmental exemption is bounded: past kMaxEnvFailuresPerArea, further
+// environmental failures count as normal attempts again, so a permanently-
+// lethal pose cannot spin the dispatch loop forever.
+TEST_F(GetNextUnmowedAreaTest, EnvFailureBudgetBackstopStillRetires)
+{
+  areas[0] = {"lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  // kMaxEnvFailuresPerArea exempt dispatches + (kMaxAreaAttempts - 1) counted
+  // ones all succeed; the next counted dispatch trips the cap and fails.
+  const uint32_t succeeding =
+      BTContext::kMaxEnvFailuresPerArea + BTContext::kMaxAreaAttempts - 1;
+  for (uint32_t i = 0; i < succeeding; ++i)
+  {
+    ctx->env_dispatch_failure = true;
+    ctx->last_nav_error_code = 205;  // START_OCCUPIED
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS) << "dispatch " << i;
+  }
+  ctx->env_dispatch_failure = true;
+  ctx->last_nav_error_code = 205;
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
+  EXPECT_GT(ctx->attempted_areas.count(0u), 0u)
+      << "past the env budget the area must still retire";
+}

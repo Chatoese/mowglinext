@@ -199,6 +199,11 @@ BT::NodeStatus EndSession::tick()
   // toward premature give-up at kMaxAreaAttempts.
   ctx->area_last_coverage.clear();
   ctx->area_last_cursor.clear();
+  // Environmental-dispatch-failure tracking (START_OCCUPIED exemption) is
+  // per-session like the attempt counters above.
+  ctx->area_env_failure_count.clear();
+  ctx->env_dispatch_failure = false;
+  ctx->last_nav_error_code = 0;
   // Swath-completion model (replaces the cell coverage grid): clear the
   // per-area completed-swath sets, swath counts, and the completed-area set so
   // the next COMMAND_START re-plans and re-mows every area from swath 0.

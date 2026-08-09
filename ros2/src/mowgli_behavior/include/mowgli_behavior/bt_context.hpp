@@ -151,6 +151,30 @@ struct BTContext
   /// ~1.25 m at the 0.05 m F2C sampling, well above post-pivot jitter.
   static constexpr std::size_t kMinCursorProgressPoses = 25;
 
+  /// error_code of the most recent NavigateToPose result received by any
+  /// BT nav client (TransitToStrip / FollowStrip inter-segment transit).
+  /// nav2_msgs::action::ComputePathToPose codes propagate through the
+  /// NavigateToPose result (205 = START_OCCUPIED, 208 = NO_VALID_PATH).
+  /// Written by the clients' result callbacks; 0 = none/success.
+  uint16_t last_nav_error_code{0};
+  /// True when the most recent failed nav dispatch was ENVIRONMENTAL —
+  /// the planner rejected the robot's own start cell (START_OCCUPIED),
+  /// i.e. the failure says nothing about the target area's mowability.
+  /// GetNextUnmowedArea consumes (and clears) this instead of counting the
+  /// dispatch toward kMaxAreaAttempts: on 2026-08-09 an RTK-degradation
+  /// window parked the fused pose inside the boundary inflation and every
+  /// area burned its full attempt budget in seconds on instant
+  /// START_OCCUPIED rejections — retiring areas that were never tried.
+  /// Set by the nav result callbacks, consumed by GetNextUnmowedArea.
+  bool env_dispatch_failure{false};
+  /// Per-area count of environmental (not-counted) dispatch failures this
+  /// session — the runaway backstop for env_dispatch_failure: once an area
+  /// accumulates kMaxEnvFailuresPerArea of them, further environmental
+  /// failures count as normal attempts again so a permanently-lethal pose
+  /// cannot spin the dispatch loop forever. Cleared by EndSession.
+  std::map<uint32_t, uint32_t> area_env_failure_count;
+  static constexpr uint32_t kMaxEnvFailuresPerArea = 15;
+
   // -----------------------------------------------------------------------
   // Swath-completion model (replaces the mow_progress cell grid)
   // -----------------------------------------------------------------------
