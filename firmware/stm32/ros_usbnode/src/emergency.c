@@ -115,6 +115,20 @@ void  Emergency_SetState(uint8_t new_emergency_state)
 }
 
 /**
+ * @brief Latch the emergency WITHOUT touching any debounced sensor bits.
+ * For watchdog-style latches (host comms loss): unlike Emergency_SetState(1),
+ * which overwrites the whole state (erasing e.g. an active wheel-lift latch
+ * that debounced during the comms outage), this ORs only the latch bit, so
+ * sensor attribution survives the outage on the wire.
+ */
+void Emergency_Latch(void)
+{
+    __disable_irq();
+    emergency_state |= 1u;
+    __enable_irq();
+}
+
+/**
  * @brief OR sensor bits into the emergency state atomically w.r.t. the USB RX
  *        interrupt (Emergency_SetState). Without the guard, the load-OR-store
  *        could drop a concurrent host assert/release.

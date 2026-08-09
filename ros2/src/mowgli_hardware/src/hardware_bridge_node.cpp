@@ -1223,6 +1223,7 @@ private:
       const bool stop_active = (pkt.emergency_bitmask & EMERGENCY_BIT_STOP) != 0u;
       const bool lift_active = (pkt.emergency_bitmask & EMERGENCY_BIT_LIFT) != 0u;
       const bool tilt_active = (pkt.emergency_bitmask & EMERGENCY_BIT_TILT) != 0u;
+      const bool comms_active = (pkt.emergency_bitmask & EMERGENCY_BIT_COMMS) != 0u;
       const bool latch_active = (pkt.emergency_bitmask & EMERGENCY_BIT_LATCH) != 0u;
 
       // Attribution logging (2026-08-04): the normal emergency path used to
@@ -1232,14 +1233,16 @@ private:
       // and release — throttled by change, not time.
       if (pkt.emergency_bitmask != last_emergency_bitmask_)
       {
-        RCLCPP_WARN(get_logger(),
-                    "Emergency bitmask change: 0x%02X -> 0x%02X (stop=%d lift=%d tilt=%d latch=%d)",
-                    last_emergency_bitmask_,
-                    pkt.emergency_bitmask,
-                    stop_active,
-                    lift_active,
-                    tilt_active,
-                    latch_active);
+        RCLCPP_WARN(
+            get_logger(),
+            "Emergency bitmask change: 0x%02X -> 0x%02X (stop=%d lift=%d tilt=%d comms=%d latch=%d)",
+            last_emergency_bitmask_,
+            pkt.emergency_bitmask,
+            stop_active,
+            lift_active,
+            tilt_active,
+            comms_active,
+            latch_active);
         last_emergency_bitmask_ = pkt.emergency_bitmask;
       }
 
@@ -1292,6 +1295,11 @@ private:
           msg.reason = "Tilt detected (IMU/mechanical)";
         else if (lift_active)
           msg.reason = "Lift detected";
+        else if (comms_active)
+          // Firmware heartbeat watchdog latched (host comms lost). The
+          // firmware auto-clears this once heartbeats resume, unless a
+          // debounced physical trigger latched during the outage.
+          msg.reason = "Comms loss (host heartbeat lost)";
         else if (latch_active)
           msg.reason = "Latched (press play button to release)";
       }

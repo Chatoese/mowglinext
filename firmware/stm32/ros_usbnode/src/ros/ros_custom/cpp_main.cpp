@@ -272,22 +272,33 @@ static uint8_t hl_gps_quality = 0;
 static volatile uint32_t last_heartbeat_tick = 0;
 #define HEARTBEAT_TIMEOUT_MS 2000u
 
-/* True when the CURRENTLY latched emergency was raised SOLELY by the heartbeat
- * watchdog (host comms lost), with no physical safety sensor asserted. A pure
- * comms-loss latch is a fail-safe stop, not a physical hazard, so it is
- * auto-cleared when heartbeats resume (and no sensor is asserted) instead of
- * stranding the robot until a manual play-button / GUI reset. A physical
- * trigger (e-stop button, lift, tilt) clears this flag so its latch still
- * requires an explicit operator release. The blade stays cut throughout — it
- * only re-arms on an explicit CMD_BLADE after the emergency clears. */
-static volatile bool heartbeat_only_latch = false;
+/* True while an emergency latch raised by the heartbeat watchdog (host comms
+ * lost) is outstanding. A pure comms-loss latch is a fail-safe stop, not a
+ * physical hazard, so it is auto-cleared when heartbeats resume (and no
+ * debounced sensor bit has latched meanwhile) instead of stranding the robot
+ * until a manual play-button / GUI reset. Whether the latch is still "pure
+ * comms" is decided at CLEAR time from the debounced sensor bits inside
+ * Emergency_State() — NOT from live sensor reads at trip time. The previous
+ * design polled the live sensors in the trip path and permanently disarmed
+ * the flag on the first blip; on 2026-08-09 a single accelerometer INT pulse
+ * (hard motor stop on the slope) disarmed it, and the robot sat latched for
+ * 49 s until the operator pressed play. Worse, that poll used the
+ * DESTRUCTIVE accelerometer accessor and could eat a real tilt event before
+ * EmergencyController's debounce ever saw it. The blade stays cut
+ * throughout — it only re-arms on an explicit CMD_BLADE after the emergency
+ * clears. */
+static volatile bool comms_latch = false;
 
 /* Any physical safety sensor currently asserted? Firmware is the sole safety
- * authority; this gates every automatic emergency clear. */
+ * authority; this gates every automatic emergency clear.
+ * MUST stay free of destructive reads: Emergency_LowZAccelerometer()
+ * (I2C_TestZLowINT) unlatches the hardware INT1 on read and would race
+ * EmergencyController out of its own tilt trigger — use the debounced
+ * internal latch (Emergency_TiltTriggered) for the accelerometer path. */
 static inline bool any_physical_emergency(void) {
   return Emergency_StopButtonYellow() || Emergency_StopButtonWhite() ||
          Emergency_WheelLiftBlue() || Emergency_WheelLiftRed() ||
-         Emergency_Tilt() || Emergency_LowZAccelerometer();
+         Emergency_Tilt() || Emergency_TiltTriggered();
 }
 
 /* ---------------------------------------------------------------------------
@@ -362,25 +373,37 @@ static void on_heartbeat(const uint8_t *data, size_t len) {
 
   last_heartbeat_tick = HAL_GetTick();
 
-  /* Comms restored. If the active emergency was a PURE comms-loss watchdog latch
-   * (no physical trigger) and no sensor is asserted now, auto-clear it so a brief
-   * host/USB stall doesn't strand the robot until a manual reset. A physical
-   * trigger that appeared in the meantime asserts a sensor (handled below) and
-   * clears heartbeat_only_latch, so this never auto-clears a physical e-stop. */
-  if (heartbeat_only_latch && Emergency_State()) {
-    if (!any_physical_emergency()) {
+  /* Latch fully cleared elsewhere (e.g. play button in EmergencyController)
+   * while the watchdog flag was still set — drop the stale flag so a LATER
+   * unrelated latch is not mis-attributed as comms-loss on the wire. */
+  if (!Emergency_State()) {
+    comms_latch = false;
+  }
+
+  /* Comms restored. If the outstanding latch is still PURE comms-loss —
+   * i.e. no debounced sensor bit has latched into Emergency_State() and no
+   * physical sensor is asserted right now — auto-clear it so a brief
+   * host/USB stall doesn't strand the robot until a manual reset. The
+   * "pure comms" decision reads the DEBOUNCED state bits, so a transient
+   * sensor blip during the outage neither blocks the auto-clear nor
+   * (as before 2026-08-09) permanently disarms it; a trigger that made it
+   * through EmergencyController's debounce sets a sensor bit above 0b1 and
+   * correctly demands an explicit operator release. */
+  if (comms_latch && Emergency_State()) {
+    const bool sensor_bit_latched = (Emergency_State() & ~1u) != 0u;
+    if (!sensor_bit_latched && !any_physical_emergency()) {
       Emergency_SetState(0);
-      heartbeat_only_latch = false;
+      comms_latch = false;
       debug_printf("heartbeat resumed: comms-loss emergency auto-cleared\r\n");
-    } else {
-      /* A physical sensor is now asserted — this is no longer a pure comms
-       * latch; require an explicit operator release. */
-      heartbeat_only_latch = false;
+    } else if (sensor_bit_latched) {
+      /* A debounced physical trigger latched during the outage — this is no
+       * longer a pure comms latch; require an explicit operator release. */
+      comms_latch = false;
     }
   }
 
   if (pkt->emergency_requested) {
-    heartbeat_only_latch = false;  /* host-commanded e-stop is not comms-loss */
+    comms_latch = false;  /* host-commanded e-stop is not comms-loss */
     Emergency_SetState(1);
   }
   if (pkt->emergency_release_requested) {
@@ -388,7 +411,7 @@ static void on_heartbeat(const uint8_t *data, size_t len) {
      * Firmware is the sole safety authority — never bypass hardware. */
     if (!any_physical_emergency()) {
       Emergency_SetState(0);
-      heartbeat_only_latch = false;
+      comms_latch = false;
     } else {
       debug_printf(
           "emergency release rejected: physical sensor still active\r\n");
@@ -1106,19 +1129,19 @@ extern "C" void motors_handler() {
       DRIVEMOTOR_SetSpeedSigned(left_pwm_signed, right_pwm_signed);
     }
 
-    // Heartbeat watchdog: if no heartbeat for HEARTBEAT_TIMEOUT_MS, emergency
-    // stop. Tag a PURE comms-loss latch (no physical sensor asserted) so it can
-    // be auto-cleared when heartbeats resume (on_heartbeat), instead of
-    // stranding the robot. If a physical sensor is asserted, leave the flag
-    // cleared so the latch needs an explicit operator release.
+    // Heartbeat watchdog: if no heartbeat for HEARTBEAT_TIMEOUT_MS, latch an
+    // emergency. Emergency_Latch() ORs only the latch bit — unlike the old
+    // Emergency_SetState(1), it cannot erase a sensor bit that debounced
+    // during the outage, so wire attribution survives. comms_latch marks the
+    // latch as watchdog-raised; whether it is still a PURE comms latch (and
+    // may auto-clear) is decided in on_heartbeat from the debounced state
+    // bits — deliberately NOT from live sensor reads here, which raced the
+    // destructive accelerometer accessor and disarmed the auto-clear forever
+    // on a single transient blip (2026-08-09 field incident).
     if (snap_heartbeat != 0 &&
         (HAL_GetTick() - snap_heartbeat) > HEARTBEAT_TIMEOUT_MS) {
-      if (any_physical_emergency()) {
-        heartbeat_only_latch = false;
-      } else if (!Emergency_State()) {
-        heartbeat_only_latch = true;
-      }
-      Emergency_SetState(1);
+      comms_latch = true;
+      Emergency_Latch();
     }
 
     BLADEMOTOR_Set(blade_on_off, blade_direction);
@@ -1312,6 +1335,11 @@ extern "C" void broadcast_handler() {
        * latch, never the live INT1 (whose read-accessor unlatches it). */
       if (Emergency_TiltTriggered()) {
         emergency_bits |= EMERGENCY_BIT_TILT;
+      }
+      /* Watchdog-raised latch (host heartbeat lost). Lets the host attribute
+       * a comms-loss trip instead of reporting a bare latch (2026-08-09). */
+      if (comms_latch) {
+        emergency_bits |= EMERGENCY_BIT_COMMS;
       }
     }
     status_pkt.emergency_bitmask = emergency_bits;

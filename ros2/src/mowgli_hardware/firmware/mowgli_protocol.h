@@ -176,6 +176,13 @@ extern "C"
  * the bit (additive, packet layout unchanged). */
 #define EMERGENCY_BIT_TILT (1u << 3u)
 
+/** Comms-loss emergency: the host-heartbeat watchdog latched because no
+ * heartbeat arrived for HEARTBEAT_TIMEOUT_MS. Added 2026-08-09: without
+ * this bit a watchdog latch reached the host as bare EMERGENCY_BIT_LATCH
+ * (field incident: a 5 s host-side stall latched an "unexplained"
+ * emergency). Old hosts ignore the bit (additive, layout unchanged). */
+#define EMERGENCY_BIT_COMMS (1u << 4u)
+
   /* ---------------------------------------------------------------------------
    * Reset cause values  (pkt_reset_cause_t::reset_cause)
    * ---------------------------------------------------------------------------*/
