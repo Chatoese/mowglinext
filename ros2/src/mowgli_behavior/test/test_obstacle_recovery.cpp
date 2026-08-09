@@ -353,8 +353,7 @@ TEST_F(IsStartCellBlockedTest, FailsOnOtherNavError)
   // NO_VALID_PATH says the GOAL may be unreachable — the escape must not fire.
   ctx->last_nav_error_code = nav2_msgs::action::ComputePathToPose::Result::NO_VALID_PATH;
   EXPECT_EQ(tick(), BT::NodeStatus::FAILURE);
-  EXPECT_EQ(ctx->last_nav_error_code,
-            nav2_msgs::action::ComputePathToPose::Result::NO_VALID_PATH)
+  EXPECT_EQ(ctx->last_nav_error_code, nav2_msgs::action::ComputePathToPose::Result::NO_VALID_PATH)
       << "a non-matching code must not be consumed";
 }
 

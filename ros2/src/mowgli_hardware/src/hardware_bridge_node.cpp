@@ -1233,16 +1233,16 @@ private:
       // and release — throttled by change, not time.
       if (pkt.emergency_bitmask != last_emergency_bitmask_)
       {
-        RCLCPP_WARN(
-            get_logger(),
-            "Emergency bitmask change: 0x%02X -> 0x%02X (stop=%d lift=%d tilt=%d comms=%d latch=%d)",
-            last_emergency_bitmask_,
-            pkt.emergency_bitmask,
-            stop_active,
-            lift_active,
-            tilt_active,
-            comms_active,
-            latch_active);
+        RCLCPP_WARN(get_logger(),
+                    "Emergency bitmask change: 0x%02X -> 0x%02X (stop=%d lift=%d tilt=%d comms=%d "
+                    "latch=%d)",
+                    last_emergency_bitmask_,
+                    pkt.emergency_bitmask,
+                    stop_active,
+                    lift_active,
+                    tilt_active,
+                    comms_active,
+                    latch_active);
         last_emergency_bitmask_ = pkt.emergency_bitmask;
       }
 

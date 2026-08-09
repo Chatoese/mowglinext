@@ -42,8 +42,8 @@ namespace
 /// context_mutex doc in bt_context.hpp); it can land a tick or two after the
 /// goal-status poll reports ABORTED, which is fine — the consumer only reads
 /// the flag after a further service round-trip.
-rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SendGoalOptions
-navErrorRecordingOptions(const std::shared_ptr<BTContext>& ctx)
+rclcpp_action::Client<nav2_msgs::action::NavigateToPose>::SendGoalOptions navErrorRecordingOptions(
+    const std::shared_ptr<BTContext>& ctx)
 {
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
   rclcpp_action::Client<NavigateToPose>::SendGoalOptions options;

@@ -304,8 +304,7 @@ TEST_F(GetNextUnmowedAreaTest, EnvFailureBudgetBackstopStillRetires)
 
   // kMaxEnvFailuresPerArea exempt dispatches + (kMaxAreaAttempts - 1) counted
   // ones all succeed; the next counted dispatch trips the cap and fails.
-  const uint32_t succeeding =
-      BTContext::kMaxEnvFailuresPerArea + BTContext::kMaxAreaAttempts - 1;
+  const uint32_t succeeding = BTContext::kMaxEnvFailuresPerArea + BTContext::kMaxAreaAttempts - 1;
   for (uint32_t i = 0; i < succeeding; ++i)
   {
     ctx->env_dispatch_failure = true;
@@ -317,6 +316,5 @@ TEST_F(GetNextUnmowedAreaTest, EnvFailureBudgetBackstopStillRetires)
   ctx->last_nav_error_code = 205;
   auto tree = makeTree(/*max_areas=*/5);
   EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
-  EXPECT_GT(ctx->attempted_areas.count(0u), 0u)
-      << "past the env budget the area must still retire";
+  EXPECT_GT(ctx->attempted_areas.count(0u), 0u) << "past the env budget the area must still retire";
 }
