@@ -51,6 +51,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<Nav2Active>("Nav2Active");
   factory.registerNodeType<IsObstacleStuck>("IsObstacleStuck");
   factory.registerNodeType<WasRecentlyInCollisionStop>("WasRecentlyInCollisionStop");
+  factory.registerNodeType<IsStartCellBlocked>("IsStartCellBlocked");
   factory.registerNodeType<IsScanStale>("IsScanStale");
   factory.registerNodeType<IsCollisionStopSustained>("IsCollisionStopSustained");
 

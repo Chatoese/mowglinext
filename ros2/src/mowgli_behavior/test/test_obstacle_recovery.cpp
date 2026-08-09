@@ -32,6 +32,7 @@
 #include "behaviortree_cpp/bt_factory.h"
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_behavior/condition_nodes.hpp"
+#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_msgs/msg/collision_monitor_state.hpp"
 #include <gtest/gtest.h>
 
@@ -302,4 +303,67 @@ TEST_F(WasRecentlyInCollisionStopTest, NoSideEffectsOnContext)
   EXPECT_EQ(ctx->last_collision_stop_end, before_end);
   EXPECT_EQ(ctx->obstacle_backoff_count, before_count);
   EXPECT_EQ(ctx->last_obstacle_backoff_time, before_backoff);
+}
+
+// ---------------------------------------------------------------------------
+// IsStartCellBlocked fixture
+// ---------------------------------------------------------------------------
+
+class IsStartCellBlockedTest : public ::testing::Test
+{
+protected:
+  std::shared_ptr<BTContext> ctx;
+  BT::Blackboard::Ptr blackboard;
+  BT::BehaviorTreeFactory factory;
+  BT::Tree tree;
+
+  void SetUp() override
+  {
+    ctx = std::make_shared<BTContext>();
+    ctx->node = rclcpp::Node::make_shared("test_is_start_cell_blocked");
+
+    blackboard = BT::Blackboard::create();
+    blackboard->set("context", ctx);
+
+    factory.registerNodeType<mowgli_behavior::IsStartCellBlocked>("IsStartCellBlocked");
+
+    static const char* xml = R"(
+      <root BTCPP_format="4">
+        <BehaviorTree ID="MainTree">
+          <IsStartCellBlocked/>
+        </BehaviorTree>
+      </root>
+    )";
+    tree = factory.createTreeFromText(xml, blackboard);
+  }
+
+  BT::NodeStatus tick()
+  {
+    return tree.tickOnce();
+  }
+};
+
+TEST_F(IsStartCellBlockedTest, FailsWithNoRecordedError)
+{
+  EXPECT_EQ(tick(), BT::NodeStatus::FAILURE);
+}
+
+TEST_F(IsStartCellBlockedTest, FailsOnOtherNavError)
+{
+  // NO_VALID_PATH says the GOAL may be unreachable — the escape must not fire.
+  ctx->last_nav_error_code = nav2_msgs::action::ComputePathToPose::Result::NO_VALID_PATH;
+  EXPECT_EQ(tick(), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(ctx->last_nav_error_code,
+            nav2_msgs::action::ComputePathToPose::Result::NO_VALID_PATH)
+      << "a non-matching code must not be consumed";
+}
+
+TEST_F(IsStartCellBlockedTest, SucceedsAndConsumesStartOccupied)
+{
+  ctx->last_nav_error_code = nav2_msgs::action::ComputePathToPose::Result::START_OCCUPIED;
+  EXPECT_EQ(tick(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->last_nav_error_code, 0u)
+      << "the code must be consumed so one failure arms at most one escape";
+  // Re-tick without a new failure: the escape must not re-fire.
+  EXPECT_EQ(tick(), BT::NodeStatus::FAILURE);
 }

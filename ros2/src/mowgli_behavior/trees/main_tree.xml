@@ -743,6 +743,35 @@
                           <WaitForDuration duration_sec="1.0"/>
                           <AlwaysFailure/>
                         </Sequence>
+                        <!-- Blocked-start escape (2026-08-09): after an RTK
+                             loss+return the fused pose can land inside the
+                             boundary inflation / a keepout cell — the global
+                             planner then rejects every transit instantly with
+                             START_OCCUPIED and the robot is nav-dead while
+                             physically fine. Reverse blade-off along the
+                             chassis axis to leave the lethal cell, clear the
+                             costmaps, and re-tick FollowStrip. The BackUp is
+                             executable HERE precisely because the LOCAL
+                             costmap deliberately carries no keepout layer
+                             (see nav2_params_base.yaml) — only the GLOBAL
+                             planner considers this cell lethal.
+                             IsStartCellBlocked CONSUMES the recorded error
+                             code, so each recorded START_OCCUPIED failure
+                             arms at most one escape; a repeat failure after
+                             the escape re-records it (bounded overall by
+                             FollowStripRetry's attempt budget, ~0.5 m per
+                             escape). GetNextUnmowedArea independently exempts
+                             these failures from the area attempt budget. -->
+                        <Sequence name="BlockedStartEscape">
+                          <IsStartCellBlocked/>
+                          <PublishHighLevelStatus state="2"
+                                                  state_name="BLOCKED_START_ESCAPE"/>
+                          <SetMowerEnabled enabled="false"/>
+                          <StopMoving/>
+                          <BackUp backup_dist="0.5" backup_speed="0.15"/>
+                          <ClearCostmap/>
+                          <AlwaysFailure/>
+                        </Sequence>
                         </Fallback>
                       </RetryUntilSuccessful>
                     </Sequence>

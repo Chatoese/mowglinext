@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "tf2/exceptions.h"
 #include "tf2/time.hpp"
 #include "tf2_ros/buffer.h"
@@ -772,6 +773,27 @@ BT::NodeStatus WasRecentlyInCollisionStop::tick()
     return BT::NodeStatus::SUCCESS;
   }
   return BT::NodeStatus::FAILURE;
+}
+
+// ---------------------------------------------------------------------------
+// IsStartCellBlocked
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus IsStartCellBlocked::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  if (ctx->last_nav_error_code != nav2_msgs::action::ComputePathToPose::Result::START_OCCUPIED)
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+
+  // Consuming read: one recorded START_OCCUPIED arms at most one escape.
+  ctx->last_nav_error_code = 0;
+  RCLCPP_WARN(ctx->node->get_logger(),
+              "IsStartCellBlocked: planner rejected the robot's own start cell "
+              "(START_OCCUPIED) — arming blocked-start escape");
+  return BT::NodeStatus::SUCCESS;
 }
 
 BT::NodeStatus IsScanStale::tick()

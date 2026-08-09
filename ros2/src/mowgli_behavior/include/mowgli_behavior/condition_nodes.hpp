@@ -676,6 +676,45 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// IsStartCellBlocked
+// ---------------------------------------------------------------------------
+
+/// Returns SUCCESS (and CONSUMES the recorded error code) when the most
+/// recent NavigateToPose dispatch failed with START_OCCUPIED — the global
+/// planner rejected the robot's OWN start cell. FAILURE otherwise.
+///
+/// Field problem this solves (2026-08-09): after an RTK loss+return the
+/// fused pose can land inside the boundary inflation or a keepout cell.
+/// The robot is physically fine, but every transit and docking plan is
+/// rejected instantly ("Start occupied") and the session bleeds out without
+/// the robot ever moving. This condition guards the BlockedStartEscape
+/// recovery (blade-off BackUp out of the lethal cell) in main_tree.xml.
+///
+/// Source signal: ctx->last_nav_error_code, recorded by the nav clients'
+/// result callbacks (navErrorRecordingOptions in coverage_nodes.cpp).
+/// CONSUMING read: the code is reset to 0 on SUCCESS so one recorded
+/// failure triggers at most one escape — a further START_OCCUPIED failure
+/// after the escape re-records the code and re-arms the branch. The field
+/// is BT-tick-serialized (result callbacks share the node's default
+/// MutuallyExclusive callback group), so no context_mutex is needed — see
+/// the field's doc in bt_context.hpp.
+class IsStartCellBlocked : public BT::ConditionNode
+{
+public:
+  IsStartCellBlocked(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+// ---------------------------------------------------------------------------
 // IsScanStale
 // ---------------------------------------------------------------------------
 
