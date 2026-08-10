@@ -161,6 +161,15 @@ public:
   std::optional<TickOutput> LatestSnapshot() const;
   GraphStats Stats() const;
 
+  // Recompute latest_->covariance from the live iSAM2 even when no node
+  // is being created — rate-limited internally by cov_update_period_s.
+  // Called by OnTimer on node-less ticks so the published σ cannot
+  // freeze at a stale value while the stationary throttle slows node
+  // creation to 1/5 s (field 2026-08-10: a phantom σ spike latched at
+  // LocalizationGuard pause-entry stayed published for up to ~50 s and
+  // self-extended every pause to ~1 min). No-op before initialization.
+  void RefreshLatestCovariance(double now_s);
+
   // Count of pose ('x') variables currently live in the iSAM2 graph.
   // Distinct from GraphStats::total_nodes, which is the monotonic
   // next-index (never decreases). After a windowed RebaseISAM2 the
@@ -446,6 +455,12 @@ private:
   bool HasPoseAt(uint64_t idx) const;
   void RefreshEstimateLocked() const;
 
+  // Node index the published covariance is sampled at: the newest
+  // GPS-carrying node when it is within cov_gps_node_max_lag of
+  // tip_index, else tip_index itself (honest σ growth during a real
+  // GPS outage). Caller must hold mu_.
+  uint64_t CovSampleIndexLocked(uint64_t tip_index) const;
+
   uint64_t next_index_ = 0;  // index of the next node to create
   double last_node_time_s_ = 0.0;  // wall time of last created node
 
@@ -454,10 +469,18 @@ private:
 
   std::optional<TickOutput> latest_;
   uint64_t loop_closures_added_ = 0;
-  // How many ticks since the last marginalCovariance refresh; used to
-  // throttle that O(N) call without losing covariance freshness on
-  // the diagnostics + odom outputs.
-  int ticks_since_cov_ = 0;
+  // Wall-clock time of the last marginalCovariance refresh (-1 = never);
+  // throttles that O(N) call to cov_update_period_s without freezing the
+  // published σ when node creation slows down (stationary throttle) —
+  // see the cov_update_period_s doc in graph_params.hpp.
+  double last_cov_refresh_s_ = -1.0;
+  // Newest node that received a GnssLeverArmFactor. The published
+  // covariance is sampled HERE (within cov_gps_node_max_lag of the tip)
+  // instead of at the tip, so a tip node whose GPS epoch simply hasn't
+  // arrived yet cannot flash a phantom σ spike into LocalizationGuard —
+  // see the cov_gps_node_max_lag doc in graph_params.hpp.
+  uint64_t last_gps_node_index_ = 0;
+  bool has_gps_node_ = false;
   std::vector<std::pair<uint64_t, uint64_t>> loop_closure_edges_;
 
   // Health counters surfaced via Stats(). All bumps go through the

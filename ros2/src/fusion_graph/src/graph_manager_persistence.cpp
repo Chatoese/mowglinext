@@ -113,7 +113,9 @@ void GraphManager::ResetLocked()
 
   latest_.reset();
   loop_closures_added_ = 0;
-  ticks_since_cov_ = 0;
+  last_cov_refresh_s_ = -1.0;
+  last_gps_node_index_ = 0;
+  has_gps_node_ = false;
   loop_closure_edges_.clear();
   scans_.clear();
   // keyframes_ is deliberately NOT cleared here. This reset is the live-graph

@@ -276,6 +276,17 @@ void FusionGraphNode::OnTimer()
   }
 
   auto out = graph_->Tick(now_s);
+  if (!out)
+  {
+    // No node this tick (rate/stationary throttle). Still refresh the
+    // published covariance on its wall-clock cadence — otherwise a σ value
+    // latched at pause-entry stays frozen for the whole stationary dwell
+    // (node every 5 s → old every-10th-node refresh = ~50 s of stale σ)
+    // and LocalizationGuard's σ<resume gate cannot clear even though the
+    // true marginal collapsed the moment GPS re-pinned the trajectory
+    // (field 2026-08-10: every guard pause self-extended to ~1 min).
+    graph_->RefreshLatestCovariance(now_s);
+  }
   if (out)
   {
     // Attach the current scan to the new node (used for loop closures

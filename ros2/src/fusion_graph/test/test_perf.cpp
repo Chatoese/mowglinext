@@ -73,7 +73,7 @@ double TimeMillis(F&& fn)
 TEST(Perf, BareTickThroughput)
 {
   fg::GraphParams gp;
-  gp.cov_update_every_n = 10;
+  gp.cov_update_period_s = 1.0;
   gp.isam2_relinearize_skip = 5;
   fg::GraphManager gm(gp);
   gm.Initialize(gtsam::Pose2(), 0.0);
@@ -123,7 +123,7 @@ TEST(Perf, BareTickThroughput)
 TEST(Perf, MowingSessionWithScansAndLC)
 {
   fg::GraphParams gp;
-  gp.cov_update_every_n = 10;
+  gp.cov_update_period_s = 1.0;
   gp.isam2_relinearize_skip = 5;
   fg::GraphManager gm(gp);
   fg::ScanMatcher matcher;

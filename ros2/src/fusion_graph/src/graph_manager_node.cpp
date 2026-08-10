@@ -440,22 +440,35 @@ std::optional<TickOutput> GraphManager::CreateNodeLocked(double now_s)
     }
   }
 
-  // 5. Marginal covariance — throttled. marginalCovariance is O(node
-  //    count) on the Bayes tree path and dominates CPU once the graph
-  //    passes a few thousand nodes. The value is only consumed by the
-  //    diagnostics topic + published Odometry, neither of which needs
-  //    10 Hz freshness — recomputing every Nth tick (default 10 → 1 Hz)
-  //    keeps the displayed σ accurate without burning CPU on every
-  //    Tick. Re-uses the previous tick's covariance when not due.
+  // Track the newest node that actually received a GnssLeverArmFactor
+  // (queue_.gnss is still set here — step 6 resets it). The published
+  // covariance below samples THIS node when it is fresh enough, so a
+  // tip node whose GPS epoch simply hasn't arrived yet cannot flash a
+  // phantom σ into LocalizationGuard (field 2026-08-10, see
+  // cov_gps_node_max_lag in graph_params.hpp).
+  if (queue_.gnss)
+  {
+    last_gps_node_index_ = next_index_;
+    has_gps_node_ = true;
+  }
+
+  // 5. Marginal covariance — throttled by WALL CLOCK. marginalCovariance
+  //    is O(node count) on the Bayes tree path and dominates CPU once
+  //    the graph passes a few thousand nodes. The value is only consumed
+  //    by the diagnostics topic + published Odometry (and through it
+  //    LocalizationGuard), none of which needs 10 Hz freshness.
+  //    Wall-clock (not every-Nth-node) so the refresh cadence survives
+  //    the stationary node throttle — see cov_update_period_s in
+  //    graph_params.hpp for the 2026-08-10 stale-latch incident.
   Eigen::Matrix3d cov = Eigen::Matrix3d::Identity() * 1.0;
-  ++ticks_since_cov_;
-  const bool refresh_cov = ticks_since_cov_ >= std::max(1, params_.cov_update_every_n);
+  const bool refresh_cov =
+      last_cov_refresh_s_ < 0.0 || (now_s - last_cov_refresh_s_) >= params_.cov_update_period_s;
   if (refresh_cov)
   {
     try
     {
-      cov = isam_.marginalCovariance(k_curr);
-      ticks_since_cov_ = 0;
+      cov = isam_.marginalCovariance(PoseKey(CovSampleIndexLocked(next_index_)));
+      last_cov_refresh_s_ = now_s;
     }
     catch (const std::exception&)
     {
@@ -464,7 +477,7 @@ std::optional<TickOutput> GraphManager::CreateNodeLocked(double now_s)
       // which fed LocalizationGuard a phantom degradation while the actual
       // estimate was centimetre-accurate (part of the 2026-08-04 pause-storm
       // incident). Reuse the last GOOD marginal instead (it is at most
-      // cov_update_every_n ticks old) and retry on the NEXT tick rather than
+      // cov_update_period_s old) and retry on the NEXT tick rather than
       // waiting a full refresh period; surface the event via the
       // cov_exceptions diagnostics counter instead of hiding it.
       ++stats_cov_exceptions_;

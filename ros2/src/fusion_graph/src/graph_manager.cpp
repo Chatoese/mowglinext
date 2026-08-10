@@ -253,6 +253,39 @@ std::optional<TickOutput> GraphManager::LatestSnapshot() const
   return latest_;
 }
 
+uint64_t GraphManager::CovSampleIndexLocked(uint64_t tip_index) const
+{
+  const auto max_lag = static_cast<uint64_t>(std::max(0, params_.cov_gps_node_max_lag));
+  if (max_lag > 0 && has_gps_node_ && tip_index >= last_gps_node_index_ &&
+      tip_index - last_gps_node_index_ <= max_lag)
+  {
+    return last_gps_node_index_;
+  }
+  return tip_index;
+}
+
+void GraphManager::RefreshLatestCovariance(double now_s)
+{
+  std::lock_guard<std::mutex> lock(mu_);
+  if (!initialized_ || !latest_ || next_index_ == 0)
+    return;
+  if (last_cov_refresh_s_ >= 0.0 && (now_s - last_cov_refresh_s_) < params_.cov_update_period_s)
+    return;
+  try
+  {
+    // next_index_ - 1 is the newest EXISTING node (Tick's cov block uses
+    // next_index_ because it runs while that node is being created).
+    latest_->covariance = isam_.marginalCovariance(PoseKey(CovSampleIndexLocked(next_index_ - 1)));
+    last_cov_refresh_s_ = now_s;
+  }
+  catch (const std::exception&)
+  {
+    // Same posture as the Tick cov block: keep the last good marginal,
+    // count the event, retry at the next opportunity.
+    ++stats_cov_exceptions_;
+  }
+}
+
 uint64_t GraphManager::LiveNodeCount() const
 {
   std::lock_guard<std::mutex> lock(mu_);

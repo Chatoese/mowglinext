@@ -47,7 +47,8 @@ FusionGraphNode::FusionGraphNode(const rclcpp::NodeOptions& opts)
   // we only mirror the magnitude here for the gate-side threshold
   // and never re-apply the offset to the GPS sample.
   lever_arm_radius_m_ = std::hypot(gp.lever_arm_x, gp.lever_arm_y);
-  gp.cov_update_every_n = declare_parameter<int>("cov_update_every_n", 10);
+  gp.cov_update_period_s = declare_parameter<double>("cov_update_period_s", 1.0);
+  gp.cov_gps_node_max_lag = declare_parameter<int>("cov_gps_node_max_lag", 20);
   gp.isam2_relinearize_skip = declare_parameter<int>("isam2_relinearize_skip", 5);
   gp.max_graph_nodes = static_cast<uint64_t>(declare_parameter<int>("max_graph_nodes", 6000));
   gp.stationary_motion_thresh_m = declare_parameter<double>("stationary_motion_thresh_m", 0.02);

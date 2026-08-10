@@ -167,6 +167,11 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_graph_window fusion_graph_core)
 
+  ament_add_gtest(test_cov_sampling
+    test/test_cov_sampling.cpp
+  )
+  target_link_libraries(test_cov_sampling fusion_graph_core)
+
   ament_add_gtest(test_adaptive_noise
     test/test_adaptive_noise.cpp
   )

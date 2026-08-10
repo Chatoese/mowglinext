@@ -109,13 +109,37 @@ struct GraphParams
   double kf_yaw_sigma_floor_rad = 0.30;
 
   // ── Performance ─────────────────────────────────────────────────
-  // Recompute the per-tick marginal covariance only every Nth tick.
-  // marginalCovariance is O(node_count) on the Bayes tree path and
-  // dominates per-tick CPU once the graph passes ~3 k nodes; the
-  // covariance value is consumed only by the diagnostics topic and
-  // the published Odometry, neither of which need 10 Hz freshness.
-  // Set to 1 to disable caching.
-  int cov_update_every_n = 10;
+  // Recompute the published marginal covariance at most once per
+  // cov_update_period_s of WALL CLOCK. marginalCovariance is O(node
+  // count) on the Bayes tree path and dominates per-tick CPU once the
+  // graph passes ~3 k nodes; the value is consumed only by the
+  // diagnostics topic, the published Odometry, and (through it)
+  // LocalizationGuard — none of which need 10 Hz freshness.
+  //
+  // Wall-clock, NOT every-Nth-node (field 2026-08-10): the old
+  // per-node counter stopped refreshing whenever node creation slowed
+  // — exactly what the stationary throttle does the moment
+  // LocalizationGuard halts the robot. A phantom σ spike latched at
+  // pause-entry then stayed published for up to ~50 s (10 nodes ×
+  // 5 s/node) while the true σ had already collapsed, so the guard's
+  // σ<resume gate could not clear and every pause self-extended to
+  // ~1 min. RefreshLatestCovariance() (called from OnTimer on
+  // node-less ticks) + the wall-clock period keep the published σ
+  // honest at 1 Hz regardless of node cadence.
+  double cov_update_period_s = 1.0;
+
+  // Sample the published covariance at the newest node that carries a
+  // GPS unary factor, as long as that node is at most this many nodes
+  // behind the tip; fall back to the tip beyond the lag (an actual GPS
+  // outage must still show honestly growing σ). Field 2026-08-10: GPS
+  // epochs (5-10 Hz) and node creation (10 Hz) are not phase-locked,
+  // so ~1 in 3 tip nodes had NO GPS unary yet when the 1 Hz marginal
+  // sampled it — during slope-slip storms (adaptive wheel σ inflated
+  // to 0.2-1.5 m/node) that tip marginal read 0.2-0.4 m although the
+  // neighbouring GPS-pinned nodes were at 1-2 cm, and
+  // LocalizationGuard paused blade-on mowing on the phantom. 0
+  // disables (always sample the tip).
+  int cov_gps_node_max_lag = 20;
 
   // iSAM2 relinearization throttle. 1 = relinearize every update
   // (max accuracy, max CPU). Higher values amortize Jacobian
