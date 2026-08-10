@@ -37,7 +37,10 @@ namespace
 fg::GraphParams MakeParams()
 {
   fg::GraphParams gp;
-  gp.node_period_s = 0.1;
+  // Half the stepped 0.1 s cadence: Step() advances now_s by 0.1*(i+1),
+  // whose float rounding occasionally lands a hair BELOW an exact 0.1 s
+  // period and makes Tick() skip the node (rate gate `dt < node_period_s`).
+  gp.node_period_s = 0.05;
   // Legacy FIXED wheel σ model with a deliberately huge per-node σ_x, so a
   // node without a GPS unary has an unmistakably large marginal — the test
   // then cleanly separates "sampled the GPS node" from "sampled the tip".
@@ -57,11 +60,8 @@ fg::GraphParams MakeParams()
 
 // One forward tick; queues a GPS unary at the wheel-predicted position when
 // with_gps is set. Returns the tick's output (node created every tick here).
-std::optional<fg::TickOutput> Step(fg::GraphManager& gm,
-                                   int i,
-                                   double vx,
-                                   bool with_gps,
-                                   double gps_sigma = 0.01)
+std::optional<fg::TickOutput> Step(
+    fg::GraphManager& gm, int i, double vx, bool with_gps, double gps_sigma = 0.01)
 {
   const double dt = 0.1;
   gm.AddWheelTwist(vx, 0.0, 0.0, dt);
