@@ -466,6 +466,14 @@ fi
 # open by one process at a time, and the apply must finish and release the port.
 GNSS_CONFIG_APPLY_BIN="${GNSS_CONFIG_APPLY_BIN:-gnss_config_apply}"
 GNSS_CONFIG_APPLY_TIMEOUT_MS="${GNSS_CONFIG_APPLY_TIMEOUT_MS:-5000}"
+# Right after container start the receiver may still be booting or the serial
+# port not yet quiet, so the very first configuration command can time out and
+# take the whole profile apply down with it — leaving the receiver without
+# BESTNAV output, i.e. RTK fixes with zero covariance that the fusion chain
+# rejects (mower stuck in WAITING_FOR_RTK, observed 2026-08-22). Retry the full
+# apply a few times before falling back to the receiver's existing config.
+GNSS_CONFIG_APPLY_ATTEMPTS="${GNSS_CONFIG_APPLY_ATTEMPTS:-3}"
+GNSS_CONFIG_APPLY_RETRY_DELAY_S="${GNSS_CONFIG_APPLY_RETRY_DELAY_S:-5}"
 config_apply_cmd=(
   "$GNSS_CONFIG_APPLY_BIN"
   --json
@@ -504,12 +512,19 @@ apply_receiver_profile() {
     return 0
   fi
 
-  echo "[start_gps.sh] Applying receiver profile '${config_profile}' (runtime-only, family=${receiver_family}, signal_profile=${signal_profile}) before starting receiver_node"
-  if "${config_apply_cmd[@]}"; then
-    echo "[start_gps.sh] Receiver profile apply succeeded"
-  else
-    echo "[start_gps.sh] WARNING: receiver profile apply failed; continuing with the receiver's existing configuration"
-  fi
+  local attempt
+  for ((attempt = 1; attempt <= GNSS_CONFIG_APPLY_ATTEMPTS; attempt++)); do
+    echo "[start_gps.sh] Applying receiver profile '${config_profile}' (runtime-only, family=${receiver_family}, signal_profile=${signal_profile}, attempt ${attempt}/${GNSS_CONFIG_APPLY_ATTEMPTS}) before starting receiver_node"
+    if "${config_apply_cmd[@]}"; then
+      echo "[start_gps.sh] Receiver profile apply succeeded (attempt ${attempt}/${GNSS_CONFIG_APPLY_ATTEMPTS})"
+      return 0
+    fi
+    if ((attempt < GNSS_CONFIG_APPLY_ATTEMPTS)); then
+      echo "[start_gps.sh] Receiver profile apply failed (attempt ${attempt}/${GNSS_CONFIG_APPLY_ATTEMPTS}); retrying in ${GNSS_CONFIG_APPLY_RETRY_DELAY_S}s"
+      sleep "$GNSS_CONFIG_APPLY_RETRY_DELAY_S"
+    fi
+  done
+  echo "[start_gps.sh] WARNING: receiver profile apply failed after ${GNSS_CONFIG_APPLY_ATTEMPTS} attempts; continuing with the receiver's existing configuration"
 }
 
 receiver_node_cmd=(
