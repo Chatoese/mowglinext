@@ -303,5 +303,3 @@ TEST_F(WasRecentlyInCollisionStopTest, NoSideEffectsOnContext)
   EXPECT_EQ(ctx->obstacle_backoff_count, before_count);
   EXPECT_EQ(ctx->last_obstacle_backoff_time, before_backoff);
 }
-
-

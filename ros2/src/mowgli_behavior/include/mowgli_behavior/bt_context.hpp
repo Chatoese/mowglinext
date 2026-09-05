@@ -179,7 +179,6 @@ struct BTContext
   /// ~1.25 m at the 0.05 m F2C sampling, well above post-pivot jitter.
   static constexpr std::size_t kMinCursorProgressPoses = 25;
 
-
   // -----------------------------------------------------------------------
   // Start-pose-blocked passes (issue #487)
   // -----------------------------------------------------------------------
