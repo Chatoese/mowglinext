@@ -75,7 +75,6 @@ struct GraphParams
   // supersedes it on every tick where an IMU sample arrived.
   double wheel_sigma_theta = 0.01;  // rad per node
 
-
   // Gyro yaw between-factor noise (overrides wheel_sigma_theta when used).
   double gyro_sigma_theta = 0.005;  // rad per node — gyro is much
                                     // tighter than wheel-derived yaw.
