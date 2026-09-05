@@ -150,6 +150,51 @@ if(BUILD_TESTING)
   target_link_libraries(test_clock_fit
     mowgli_hardware_core
   )
+
+  # ---- test_dig_detector ----
+  # Header-only pure logic (dig_detector.hpp): no link against
+  # mowgli_hardware_core needed, just the include path.
+  ament_add_gtest(test_dig_detector
+    test/test_dig_detector.cpp
+  )
+  target_include_directories(test_dig_detector
+    PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  ament_target_dependencies(test_dig_detector mowgli_interfaces)
+
+  # ---- test_dig_escalation ----
+  # Header-only pure logic (dig_escalation.hpp): no link against
+  # mowgli_hardware_core needed, just the include path.
+  ament_add_gtest(test_dig_escalation
+    test/test_dig_escalation.cpp
+  )
+  target_include_directories(test_dig_escalation
+    PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+
+  # ---- test_imu_liveness ----
+  # Header-only pure logic (imu_liveness.hpp): no link against
+  # mowgli_hardware_core needed, just the include path.
+  ament_add_gtest(test_imu_liveness
+    test/test_imu_liveness.cpp
+  )
+  target_include_directories(test_imu_liveness
+    PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+
+  # ---- test_blade_gate ----
+  # Header-only pure logic (blade_gate.hpp): no link against
+  # mowgli_hardware_core needed, just the include path.
+  ament_add_gtest(test_blade_gate
+    test/test_blade_gate.cpp
+  )
+  target_include_directories(test_blade_gate
+    PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
 endif()
 
 # ---------------------------------------------------------------------------

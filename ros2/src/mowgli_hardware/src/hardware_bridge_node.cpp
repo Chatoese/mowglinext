@@ -51,6 +51,7 @@
 #include <cstring>
 #include <ctime>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -59,7 +60,12 @@
 
 #include "geometry_msgs/msg/pose_with_covariance_stamped.hpp"
 #include "geometry_msgs/msg/twist_stamped.hpp"
+#include "mowgli_hardware/blade_gate.hpp"
 #include "mowgli_hardware/clock_fit.hpp"
+#include "mowgli_hardware/dig_detector.hpp"
+#include "mowgli_hardware/dig_escalation.hpp"
+#include "mowgli_hardware/gnss_hardware_status.hpp"
+#include "mowgli_hardware/imu_liveness.hpp"
 #include "mowgli_hardware/ll_datatypes.hpp"
 #include "mowgli_hardware/odometry_publisher.hpp"
 #include "mowgli_hardware/packet_handler.hpp"
@@ -115,7 +121,9 @@ static const char* high_level_mode_name(const uint8_t mode)
   }
 }
 
+#include "mowgli_interfaces/gnss_observation_freshness.hpp"
 #include "mowgli_interfaces/gnss_status_utils.hpp"
+#include "mowgli_interfaces/msg/dig_event.hpp"
 #include "mowgli_interfaces/msg/emergency.hpp"
 #include "mowgli_interfaces/msg/gnss_status.hpp"
 #include "mowgli_interfaces/msg/high_level_status.hpp"
@@ -132,6 +140,7 @@ static const char* high_level_mode_name(const uint8_t mode)
 #include "sensor_msgs/msg/imu.hpp"
 #include "sensor_msgs/msg/magnetic_field.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/header.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 #include "std_srvs/srv/trigger.hpp"
@@ -607,6 +616,13 @@ private:
     // so a redeploy reads the latest values from the same source.
     lift_recovery_mode_ = declare_parameter<bool>("lift_recovery_mode", false);
     lift_blade_resume_delay_sec_ = declare_parameter<double>("lift_blade_resume_delay_sec", 1.0);
+    // Dry-run inhibit (issue #195): false suppresses every blade ENABLE that
+    // reaches on_mower_control, so a full mowing mission can be driven with the
+    // blade never spinning. NOT a safety interlock — the firmware remains the
+    // sole blade safety authority and a DISABLE always passes through
+    // (see blade_gate.hpp). Read once here, so a GUI change needs a ROS2
+    // container restart.
+    mowing_enabled_ = declare_parameter<bool>("mowing_enabled", true);
     // imu_yaw parameter is used by URDF for mounting rotation, not needed here
     imu_cal_samples_ = declare_parameter<int>("imu_cal_samples", 200);
     // Persist the last successful calibration so container restarts don't
@@ -641,6 +657,56 @@ private:
     // robot is moving, and a single recal is ~2.2 s of sample collection
     // at 91 Hz × 200 samples.
     imu_cal_periodic_recal_sec_ = declare_parameter<double>("imu_cal_periodic_recal_sec", 60.0);
+
+    // ── Wheel-slip dig detection (see mowgli_hardware/dig_detector.hpp) ────
+    //
+    // Runs HERE, in the bridge, and not in a controller, because ~/cmd_vel is
+    // twist_mux's MERGED output: every lane that can move this robot —
+    // coverage (FTC), transit (RPP), docking, teleop — converges on this one
+    // path, so a check placed here covers all of them by construction. A
+    // controller-side check would only ever see its own lane, and docking is
+    // exactly a case where a controller-side check sees nothing.
+    //
+    // The firmware anti-dig (ANTIDIG_* in cpp_main.cpp) is unchanged and
+    // remains the un-bypassable backstop for BLOCKED wheels. This detector
+    // covers the complementary case it structurally cannot see — wheels
+    // SPINNING while the chassis stays put — because the firmware has no
+    // absolute position reference, only the encoders that are lying.
+    dig_detect_enabled_ = declare_parameter<bool>("dig_detect_enabled", true);
+    dig_cfg_.window_s = declare_parameter<double>("dig_window_s", 1.2);
+    dig_cfg_.min_cmd_speed = declare_parameter<double>("dig_min_cmd_speed", 0.05);
+    dig_cfg_.min_wheel_dist = declare_parameter<double>("dig_min_wheel_dist", 0.15);
+    dig_cfg_.progress_fraction = declare_parameter<double>("dig_progress_fraction", 0.35);
+    // Above this fused-pose sigma the detector stands down entirely: under
+    // RTK-Float the map pose cannot distinguish slip from GNSS noise, and a
+    // false dig would hard-stop a perfectly healthy robot mid-mow.
+    dig_cfg_.max_pos_sigma = declare_parameter<double>("dig_max_pos_sigma", 0.10);
+    dig_gnss_timeout_s_ = declare_parameter<double>("dig_gnss_timeout_s", 2.0);
+    dig_cfg_.max_yaw_rate = declare_parameter<double>("dig_max_yaw_rate", 0.20);
+    dig_gyro_timeout_s_ = declare_parameter<double>("dig_gyro_timeout_s", 0.5);
+    dig_escape_cfg_.reverse_speed = declare_parameter<double>("dig_reverse_speed", 0.12);
+    dig_escape_cfg_.reverse_dist = declare_parameter<double>("dig_reverse_dist", 0.30);
+    dig_escape_cfg_.timeout_s = declare_parameter<double>("dig_reverse_timeout_s", 4.0);
+    dig_monitor_rate_ = declare_parameter<double>("dig_monitor_rate", 10.0);
+    // Fused pose older than this is treated as absent (detector stands down)
+    // rather than compared against stale coordinates.
+    dig_pose_timeout_s_ = declare_parameter<double>("dig_pose_timeout_s", 1.0);
+    dig_cfg_.enabled = dig_detect_enabled_;
+
+    // ── Repeat-dig escalation (see mowgli_hardware/dig_escalation.hpp) ─────
+    //
+    // The per-event response above is unchanged. This only notices that the
+    // SAME dig keeps happening: issue #500's 2026-09-04 capture latched 17
+    // times, five of them in 23 s inside a 6 cm square, then kept latching
+    // for 5.5 more minutes while the chassis crawled 20 cm against a physical
+    // object. Neither the bounded reverse nor the 0.60 m pending keepout can
+    // break that — the robot is not re-entering a mapped cell, the next
+    // planned manoeuvre simply aims it back at the same object. Escalating
+    // hands the problem to the operator; the bridge itself still commands
+    // nothing beyond the hard stop and bounded reverse it already did.
+    dig_escalate_cfg_.radius_m = declare_parameter<double>("dig_escalate_radius_m", 0.50);
+    dig_escalate_cfg_.window_s = declare_parameter<double>("dig_escalate_window_s", 60.0);
+    dig_escalate_cfg_.min_count = declare_parameter<int>("dig_escalate_count", 3);
 
     RCLCPP_INFO(get_logger(),
                 "Parameters: serial_port=%s baud_rate=%d heartbeat_rate=%.1f Hz "
@@ -677,6 +743,20 @@ private:
     // into ekf_map/ekf_odom set_pose. Remapped to /gnss/heading in
     // mowgli.launch.py. Stops automatically when the robot undocks.
     pub_dock_heading_ = create_publisher<sensor_msgs::msg::Imu>("~/dock_heading", rclcpp::QoS(10));
+    // Latched dig reports. TRANSIENT_LOCAL so map_server still receives the
+    // event if it (re)starts a moment after the dig — the location is worth
+    // marking whenever it arrives, and these are rare, low-rate events.
+    pub_dig_event_ =
+        create_publisher<mowgli_interfaces::msg::DigEvent>("~/dig_event",
+                                                           rclcpp::QoS(10).transient_local());
+    // Repeat-dig escalation flag. TRANSIENT_LOCAL depth 1 so the BT and the
+    // GUI read the CURRENT value the moment they subscribe, however late they
+    // start — a latch that only existed as a one-shot message would be missed
+    // by exactly the consumers that need it. Published immediately so the
+    // topic always carries a value rather than nothing-yet.
+    pub_dig_escalated_ =
+        create_publisher<std_msgs::msg::Bool>("~/dig_escalated", rclcpp::QoS(1).transient_local());
+    publish_dig_escalated();
     timer_dock_heading_ = create_wall_timer(std::chrono::seconds(1),
                                             [this]()
                                             {
@@ -702,7 +782,34 @@ private:
         rclcpp::QoS(10),
         [this](mowgli_interfaces::msg::GnssStatus::ConstSharedPtr msg)
         {
+          const rclcpp::Time ros_now = now();
+          const rclcpp::Time receipt_stamp(msg->header.stamp, get_clock()->get_clock_type());
+          const auto observation_update =
+              gnss_observation_freshness_.Observe(msg->position_observation_sequence,
+                                                  receipt_stamp.nanoseconds(),
+                                                  ros_now.nanoseconds(),
+                                                  steadyNowNs());
+          using mowgli_interfaces::gnss_observation_freshness::IsAcceptedObservation;
+          using mowgli_interfaces::gnss_observation_freshness::ObservationUpdate;
+          if (!IsAcceptedObservation(observation_update))
+          {
+            if (observation_update == ObservationUpdate::kInvalidProvenance)
+            {
+              RCLCPP_WARN_THROTTLE(get_logger(),
+                                   *get_clock(),
+                                   5000,
+                                   "hardware: GNSS receipt stamp is zero/future; trust denied");
+            }
+            return;
+          }
+
           gps_quality_ = mowgli_interfaces::gnss_status_utils::HardwareQualityPercent(*msg);
+
+          // Trust signal for the dig detector. The receiver's own accuracy
+          // figure, NOT the factor graph's marginal — see dig_detector.hpp.
+          const auto acc = mowgli_interfaces::gnss_status_utils::HorizontalAccuracyMeters(*msg);
+          dig_gnss_acc_m_ = acc ? static_cast<double>(*acc) : -1.0;
+          dig_gnss_rtk_fixed_ = mowgli_interfaces::gnss_status_utils::BehaviorTreeRtkFixed(*msg);
         });
 
     // Mirror the behavior tree's high-level state to the firmware so it
@@ -729,6 +836,17 @@ private:
                        "High-level mode updated to %u (%s)",
                        msg->state,
                        msg->state_name.c_str());
+        });
+
+    // GNSS-anchored fused pose — the ONLY signal on this robot independent
+    // of the wheels, and therefore the only one that can witness a dig.
+    // SensorDataQoS to match fusion_graph's publisher.
+    sub_filtered_map_ = create_subscription<nav_msgs::msg::Odometry>(
+        "/odometry/filtered_map",
+        rclcpp::SensorDataQoS(),
+        [this](nav_msgs::msg::Odometry::ConstSharedPtr msg)
+        {
+          on_filtered_map_odom(msg);
         });
   }
 
@@ -881,6 +999,22 @@ private:
                                           {
                                             send_high_level_state();
                                           });
+
+    // Wheel-slip dig monitor. Runs on its own timer rather than inside
+    // on_cmd_vel because the escape must keep driving the wire even when the
+    // controller that caused the dig has gone silent (an aborted Nav2 goal
+    // stops publishing cmd_vel entirely — exactly the moment the robot is
+    // still sitting in the hole it dug).
+    if (dig_detect_enabled_)
+    {
+      const auto dig_period_ms =
+          std::chrono::milliseconds(static_cast<int>(1000.0 / std::max(1.0, dig_monitor_rate_)));
+      timer_dig_monitor_ = create_wall_timer(dig_period_ms,
+                                             [this]()
+                                             {
+                                               dig_monitor_tick();
+                                             });
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -1159,6 +1293,19 @@ private:
                     "Charging transition: dock_heading anchor window "
                     "(%.1fs) opened.",
                     kChargingAnchorWindowSec);
+
+        // Reaching the charger is the one unambiguous proof the robot is no
+        // longer wedged where it was digging, so it is where the repeat-dig
+        // latch clears (see dig_escalation.hpp). The history goes with it —
+        // stale latches from before an extraction must not count toward the
+        // next escalation.
+        if (dig_escalated_)
+        {
+          dig_escalated_ = false;
+          publish_dig_escalated();
+          RCLCPP_INFO(get_logger(), "Dig escalation cleared: robot reached the charger.");
+        }
+        dig_latch_history_.clear();
       }
 
       // Start IMU calibration when charging and not already calibrating.
@@ -1202,6 +1349,7 @@ private:
       msg.firmware_debug_enabled = firmware_debug_enabled_;
       msg.mower_esc_status = blade_active_ ? 1u : 0u;
       msg.mower_motor_rpm = blade_rpm_;
+      msg.blade_status_stamp = blade_status_time_;
       msg.mower_motor_temperature = blade_temperature_;
       msg.mower_esc_current = blade_esc_current_;
       // Firmware version handshake result (image <-> firmware compatibility).
@@ -1442,6 +1590,20 @@ private:
       RCLCPP_WARN(get_logger(), "Persisted IMU cal parse failed — ignoring, will re-calibrate.");
       return;
     }
+    // A file whose five variances are all exactly 0 was recorded from a dead
+    // sensor (2026-09-02: a hung WT901 bus streamed exact zeros through a
+    // full 200-sample window and the result was persisted). Loading it
+    // would silently replace the real gyro bias with 0.
+    if (IsDeadSensorCovariance(
+            imu_cal_cov_ax_, imu_cal_cov_ay_, imu_cal_cov_gx_, imu_cal_cov_gy_, imu_cal_cov_gz_))
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Persisted IMU cal rejected — all covariances are exactly 0 "
+                  "(dead-sensor calibration). Ignoring, will re-calibrate.");
+      imu_cal_offset_gx_ = imu_cal_offset_gy_ = imu_cal_offset_gz_ = 0.0;
+      imu_cal_offset_ax_ = imu_cal_offset_ay_ = 0.0;
+      return;
+    }
     // Sanity: if a previous cal ran while the robot was actually rotating
     // (false at-rest detection, dock glitch, whatever), the saved gyro
     // offset will be huge. Reject to force a clean re-cal rather than
@@ -1482,6 +1644,183 @@ private:
                 imu_cal_offset_gz_,
                 imu_cal_offset_ax_,
                 imu_cal_offset_ay_);
+  }
+
+  // Result of one completed calibration window, computed from the sample
+  // buffers WITHOUT touching the live imu_cal_* members (see apply/discard).
+  struct ImuCalResult
+  {
+    double off_ax{0.0}, off_ay{0.0}, mean_az{0.0};
+    double off_gx{0.0}, off_gy{0.0}, off_gz{0.0};
+    double cov_ax{0.0}, cov_ay{0.0}, cov_gx{0.0}, cov_gy{0.0}, cov_gz{0.0};
+    double accel_mag{0.0};  // |mean accel| — gravity on a healthy sensor
+  };
+
+  static double sample_variance(const std::vector<double>& v, double mean)
+  {
+    if (v.empty())
+    {
+      return 0.0;
+    }
+    double acc = 0.0;
+    for (const double x : v)
+    {
+      acc += (x - mean) * (x - mean);
+    }
+    return acc / static_cast<double>(v.size());
+  }
+
+  ImuCalResult compute_imu_calibration() const
+  {
+    const double n = static_cast<double>(imu_cal_count_);
+    ImuCalResult r;
+    r.off_ax = imu_cal_sum_ax_ / n;
+    r.off_ay = imu_cal_sum_ay_ / n;
+    r.mean_az = imu_cal_sum_az_ / n;
+    r.off_gx = imu_cal_sum_gx_ / n;
+    r.off_gy = imu_cal_sum_gy_ / n;
+    r.off_gz = imu_cal_sum_gz_ / n;
+    r.cov_ax = sample_variance(imu_cal_samples_ax_, r.off_ax);
+    r.cov_ay = sample_variance(imu_cal_samples_ay_, r.off_ay);
+    r.cov_gx = sample_variance(imu_cal_samples_gx_, r.off_gx);
+    r.cov_gy = sample_variance(imu_cal_samples_gy_, r.off_gy);
+    r.cov_gz = sample_variance(imu_cal_samples_gz_, r.off_gz);
+    r.accel_mag = std::sqrt(r.off_ax * r.off_ax + r.off_ay * r.off_ay + r.mean_az * r.mean_az);
+    return r;
+  }
+
+  void clear_imu_cal_samples()
+  {
+    imu_cal_samples_ax_.clear();
+    imu_cal_samples_ay_.clear();
+    imu_cal_samples_gx_.clear();
+    imu_cal_samples_gy_.clear();
+    imu_cal_samples_gz_.clear();
+  }
+
+  // The window came from a dead sensor (2026-09-02: 200 exact zeros were
+  // accepted AND persisted, wiping a good gyro bias). Same recovery as the
+  // mid-collection abort: keep the previous completed cal if there is one,
+  // otherwise stay uncalibrated. The persisted file is NOT touched. Throttled
+  // because a docked robot with no previous cal retries the window every
+  // ~2 s until the sensor comes back.
+  void discard_imu_calibration(const ImuCalResult& r)
+  {
+    imu_cal_collecting_ = false;
+    imu_cal_count_ = 0;
+    if (imu_cal_last_completed_.nanoseconds() > 0)
+    {
+      imu_cal_ready_ = true;
+    }
+    RCLCPP_ERROR_THROTTLE(get_logger(),
+                          *get_clock(),
+                          kImuDeadRepeatLogMs,
+                          "IMU calibration DISCARDED — implausible window: |accel|=%.3f m/s² "
+                          "(gravity expected), gyro cov [%.2e, %.2e, %.2e]. The sensor is "
+                          "dead or hung (bus hang?); keeping %s and NOT persisting. "
+                          "Power-cycle the mainboard.",
+                          r.accel_mag,
+                          r.cov_gx,
+                          r.cov_gy,
+                          r.cov_gz,
+                          imu_cal_ready_ ? "the previous calibration" : "raw passthrough");
+  }
+
+  void apply_imu_calibration(const ImuCalResult& r)
+  {
+    imu_cal_offset_ax_ = r.off_ax;
+    imu_cal_offset_ay_ = r.off_ay;
+    imu_cal_offset_gx_ = r.off_gx;
+    imu_cal_offset_gy_ = r.off_gy;
+    imu_cal_offset_gz_ = r.off_gz;
+    imu_cal_cov_ax_ = r.cov_ax;
+    imu_cal_cov_ay_ = r.cov_ay;
+    imu_cal_cov_gx_ = r.cov_gx;
+    imu_cal_cov_gy_ = r.cov_gy;
+    imu_cal_cov_gz_ = r.cov_gz;
+
+    imu_cal_collecting_ = false;
+    imu_cal_ready_ = true;
+    imu_cal_last_completed_ = now();
+
+    // Push the freshly-measured gyro-Z bias into the firmware yaw loop so it
+    // subtracts it before regulation (keeps open-loop BackUp straight). This
+    // fires on the first cal AND every periodic re-cal, so the firmware
+    // always has a current bias as it drifts on the dock.
+    send_yaw_pid();
+    RCLCPP_INFO(get_logger(),
+                "IMU calibration complete (%d samples) — "
+                "accel offset [%.4f, %.4f] m/s², "
+                "gyro offset [%.6f, %.6f, %.6f] rad/s, "
+                "accel cov [%.6f, %.6f], gyro cov [%.6f, %.6f, %.6f]",
+                imu_cal_count_,
+                imu_cal_offset_ax_,
+                imu_cal_offset_ay_,
+                imu_cal_offset_gx_,
+                imu_cal_offset_gy_,
+                imu_cal_offset_gz_,
+                imu_cal_cov_ax_,
+                imu_cal_cov_ay_,
+                imu_cal_cov_gx_,
+                imu_cal_cov_gy_,
+                imu_cal_cov_gz_);
+
+    // ---- Implied mounting pitch/roll from at-rest gravity vector ----
+    // At rest on a level dock, the chip accel reads [0, 0, g] in the
+    // *IMU* frame. If it reads non-zero on X/Y, either (a) the IMU is
+    // physically tilted relative to base_link (mounting error), or
+    // (b) the chip has a factory accel bias. Assuming the dock is
+    // level, the angular offsets below capture the combined effect,
+    // which you can feed into mowgli_robot.yaml as imu_pitch / imu_roll
+    // so the URDF base_link->imu_link rotation matches reality.
+    //   pitch (nose-down = +) = atan2(-ax_raw, az_raw)
+    //   roll  (right-down = +) = atan2( ay_raw, az_raw)
+    // Magnitudes ≫ ~1° warrant YAML correction; smaller values are
+    // likely chip bias and are already removed by this calibration
+    // for ax/ay on every future sample.
+    const double implied_pitch_deg = std::atan2(-r.off_ax, r.mean_az) * 180.0 / M_PI;
+    const double implied_roll_deg = std::atan2(r.off_ay, r.mean_az) * 180.0 / M_PI;
+    RCLCPP_INFO(get_logger(),
+                "Implied mounting tilt: pitch=%.3f°, roll=%.3f° "
+                "(|accel|=%.3f m/s², az_mean=%.3f). "
+                "If magnitudes exceed ~1° set imu_pitch / imu_roll in "
+                "mowgli_robot.yaml and redeploy.",
+                implied_pitch_deg,
+                implied_roll_deg,
+                r.accel_mag,
+                r.mean_az);
+
+    // Persist to disk so container restarts don't lose the calibration
+    // (this is the fix for the "stale gyro bias after pull" class of bugs).
+    persist_imu_calibration(implied_pitch_deg, implied_roll_deg);
+  }
+
+  // Debounced dead-IMU watch (imu_liveness.hpp). Logs ERROR once on the
+  // alive->dead edge, repeats every kImuDeadRepeatLogMs while dead, INFO on
+  // revival. Detection only — nothing is gated on it yet.
+  void track_imu_liveness(double ax, double ay, double az, double gx, double gy, double gz)
+  {
+    const ImuLivenessUpdate step =
+        UpdateImuLiveness(imu_liveness_, IsImuSampleDead(ax, ay, az, gx, gy, gz));
+    imu_liveness_ = step.state;
+    if (step.became_alive)
+    {
+      RCLCPP_INFO(get_logger(), "IMU is reporting plausible acceleration again — sensor alive.");
+      return;
+    }
+    if (!step.state.dead)
+    {
+      return;
+    }
+    const double since_log_ms = (now() - imu_dead_last_log_).seconds() * 1000.0;
+    if (step.became_dead || since_log_ms >= static_cast<double>(kImuDeadRepeatLogMs))
+    {
+      imu_dead_last_log_ = now();
+      RCLCPP_ERROR(get_logger(),
+                   "IMU reporting zero acceleration for %.1f s — sensor dead (bus hang?), "
+                   "gyro/accel are NOT trustworthy; power-cycle the mainboard.",
+                   static_cast<double>(kImuDeadSampleThreshold) / kImuPacketRateHz);
+    }
   }
 
   void start_imu_calibration(const char* reason)
@@ -1530,6 +1869,12 @@ private:
     double gx = static_cast<double>(pkt.gyro_rads[0]);
     double gy = static_cast<double>(pkt.gyro_rads[1]);
     double gz = static_cast<double>(pkt.gyro_rads[2]);
+
+    // Dead-sensor watch on the RAW sample, before any offset is applied.
+    // Gravity is never zero: |accel| ~ 0 is a hung WT901 bus (2026-09-02),
+    // and everything below — calibration, /imu/data, the dig detector's
+    // gyro turn exclusion — would otherwise consume the zeros as truth.
+    track_imu_liveness(ax, ay, az, gx, gy, gz);
 
     // Auto-calibrate off-dock when stationary. Covers the "image pulled,
     // container restarted, robot has not docked since" case that leaves
@@ -1607,94 +1952,18 @@ private:
 
       if (imu_cal_count_ >= imu_cal_samples_)
       {
-        const double n = static_cast<double>(imu_cal_count_);
-        imu_cal_offset_ax_ = imu_cal_sum_ax_ / n;
-        imu_cal_offset_ay_ = imu_cal_sum_ay_ / n;
-        imu_cal_offset_gx_ = imu_cal_sum_gx_ / n;
-        imu_cal_offset_gy_ = imu_cal_sum_gy_ / n;
-        imu_cal_offset_gz_ = imu_cal_sum_gz_ / n;
-
-        // Compute variance for covariance diagonal
-        imu_cal_cov_ax_ = imu_cal_cov_ay_ = 0.0;
-        imu_cal_cov_gx_ = imu_cal_cov_gy_ = imu_cal_cov_gz_ = 0.0;
-        for (int i = 0; i < imu_cal_count_; ++i)
+        // Compute into a local result first so an implausible window can be
+        // DISCARDED without clobbering the previous good calibration.
+        const ImuCalResult r = compute_imu_calibration();
+        if (IsCalibrationPlausible(r.accel_mag, r.cov_gx, r.cov_gy, r.cov_gz))
         {
-          imu_cal_cov_ax_ += std::pow(imu_cal_samples_ax_[i] - imu_cal_offset_ax_, 2);
-          imu_cal_cov_ay_ += std::pow(imu_cal_samples_ay_[i] - imu_cal_offset_ay_, 2);
-          imu_cal_cov_gx_ += std::pow(imu_cal_samples_gx_[i] - imu_cal_offset_gx_, 2);
-          imu_cal_cov_gy_ += std::pow(imu_cal_samples_gy_[i] - imu_cal_offset_gy_, 2);
-          imu_cal_cov_gz_ += std::pow(imu_cal_samples_gz_[i] - imu_cal_offset_gz_, 2);
+          apply_imu_calibration(r);
         }
-        imu_cal_cov_ax_ /= n;
-        imu_cal_cov_ay_ /= n;
-        imu_cal_cov_gx_ /= n;
-        imu_cal_cov_gy_ /= n;
-        imu_cal_cov_gz_ /= n;
-
-        imu_cal_collecting_ = false;
-        imu_cal_ready_ = true;
-        imu_cal_last_completed_ = now();
-
-        // Push the freshly-measured gyro-Z bias into the firmware yaw loop so it
-        // subtracts it before regulation (keeps open-loop BackUp straight). This
-        // fires on the first cal AND every periodic re-cal, so the firmware
-        // always has a current bias as it drifts on the dock.
-        send_yaw_pid();
-        RCLCPP_INFO(get_logger(),
-                    "IMU calibration complete (%d samples) — "
-                    "accel offset [%.4f, %.4f] m/s², "
-                    "gyro offset [%.6f, %.6f, %.6f] rad/s, "
-                    "accel cov [%.6f, %.6f], gyro cov [%.6f, %.6f, %.6f]",
-                    imu_cal_count_,
-                    imu_cal_offset_ax_,
-                    imu_cal_offset_ay_,
-                    imu_cal_offset_gx_,
-                    imu_cal_offset_gy_,
-                    imu_cal_offset_gz_,
-                    imu_cal_cov_ax_,
-                    imu_cal_cov_ay_,
-                    imu_cal_cov_gx_,
-                    imu_cal_cov_gy_,
-                    imu_cal_cov_gz_);
-
-        // ---- Implied mounting pitch/roll from at-rest gravity vector ----
-        // At rest on a level dock, the chip accel reads [0, 0, g] in the
-        // *IMU* frame. If it reads non-zero on X/Y, either (a) the IMU is
-        // physically tilted relative to base_link (mounting error), or
-        // (b) the chip has a factory accel bias. Assuming the dock is
-        // level, the angular offsets below capture the combined effect,
-        // which you can feed into mowgli_robot.yaml as imu_pitch / imu_roll
-        // so the URDF base_link->imu_link rotation matches reality.
-        //   pitch (nose-down = +) = atan2(-ax_raw, az_raw)
-        //   roll  (right-down = +) = atan2( ay_raw, az_raw)
-        // Magnitudes ≫ ~1° warrant YAML correction; smaller values are
-        // likely chip bias and are already removed by this calibration
-        // for ax/ay on every future sample.
-        const double az_mean = imu_cal_sum_az_ / n;
-        const double a_mag = std::sqrt(imu_cal_offset_ax_ * imu_cal_offset_ax_ +
-                                       imu_cal_offset_ay_ * imu_cal_offset_ay_ + az_mean * az_mean);
-        const double implied_pitch_deg = std::atan2(-imu_cal_offset_ax_, az_mean) * 180.0 / M_PI;
-        const double implied_roll_deg = std::atan2(imu_cal_offset_ay_, az_mean) * 180.0 / M_PI;
-        RCLCPP_INFO(get_logger(),
-                    "Implied mounting tilt: pitch=%.3f°, roll=%.3f° "
-                    "(|accel|=%.3f m/s², az_mean=%.3f). "
-                    "If magnitudes exceed ~1° set imu_pitch / imu_roll in "
-                    "mowgli_robot.yaml and redeploy.",
-                    implied_pitch_deg,
-                    implied_roll_deg,
-                    a_mag,
-                    az_mean);
-
-        // Persist to disk so container restarts don't lose the calibration
-        // (this is the fix for the "stale gyro bias after pull" class of bugs).
-        persist_imu_calibration(implied_pitch_deg, implied_roll_deg);
-
-        // Free sample buffers
-        imu_cal_samples_ax_.clear();
-        imu_cal_samples_ay_.clear();
-        imu_cal_samples_gx_.clear();
-        imu_cal_samples_gy_.clear();
-        imu_cal_samples_gz_.clear();
+        else
+        {
+          discard_imu_calibration(r);
+        }
+        clear_imu_cal_samples();
       }
     }
 
@@ -1716,6 +1985,15 @@ private:
     msg.angular_velocity.x = gx;
     msg.angular_velocity.y = gy;
     msg.angular_velocity.z = gz;
+
+    // Latch the calibrated gyro yaw rate for the dig detector's turn
+    // exclusion. It MUST be this signal and not a wheel-derived yaw rate —
+    // see dig_detector.hpp: a one-wheel slip produces a large WHEEL yaw rate
+    // while the chassis does not rotate at all, so a wheel-based exclusion
+    // would suppress exactly the dig it exists to catch.
+    last_gyro_yaw_rate_ = gz;
+    last_gyro_time_ = now();
+    have_gyro_ = true;
 
     // Magnetometer data is ignored — uncalibrated on metal robot chassis,
     // gives ~229° error vs real heading. dock_pose_yaw is a map-frame ENU
@@ -1979,12 +2257,45 @@ private:
                     sizeof(LlHeartbeat) - sizeof(uint16_t));  // CRC appended by encode_packet.
   }
 
+  static std::int64_t steadyNowNs()
+  {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+  }
+
+  bool gnssObservationFresh()
+  {
+    const auto maximum_age_ns = static_cast<std::int64_t>(dig_gnss_timeout_s_ * 1.0e9);
+    const bool fresh = gnss_observation_freshness_.ObservationIsFresh(now().nanoseconds(),
+                                                                      steadyNowNs(),
+                                                                      maximum_age_ns);
+    if (!gnss_freshness_initialized_)
+    {
+      gnss_freshness_initialized_ = true;
+      last_gnss_observation_fresh_ = fresh;
+    }
+    else if (fresh != last_gnss_observation_fresh_)
+    {
+      last_gnss_observation_fresh_ = fresh;
+      if (fresh)
+      {
+        RCLCPP_INFO(get_logger(), "GNSS physical observation recovered; dig trust/lock restored");
+      }
+      else
+      {
+        RCLCPP_WARN(get_logger(), "GNSS physical observation stale; dig trust/lock cleared");
+      }
+    }
+    return fresh;
+  }
+
   void send_high_level_state()
   {
     LlHighLevelState pkt{};
     pkt.type = PACKET_ID_LL_HIGH_LEVEL_STATE;
     pkt.current_mode = current_mode_;
-    pkt.gps_quality = gps_quality_;
+    pkt.gps_quality = GnssQualityForFirmware(gnssObservationFresh(), gps_quality_);
 
     if (last_sent_mode_ != current_mode_ || last_sent_mode_state_name_ != current_mode_state_name_)
     {
@@ -1994,7 +2305,7 @@ private:
                   current_mode_,
                   high_level_mode_name(current_mode_),
                   current_mode_state_name_.c_str(),
-                  gps_quality_);
+                  pkt.gps_quality);
       last_sent_mode_ = current_mode_;
       last_sent_mode_state_name_ = current_mode_state_name_;
     }
@@ -2243,6 +2554,7 @@ private:
     // Update the Status message fields with live blade data
     blade_active_ = pkt.is_active != 0u;
     blade_rpm_ = static_cast<float>(pkt.rpm);
+    blade_status_time_ = now();
     blade_temperature_ = pkt.temperature;
     blade_esc_current_ = static_cast<float>(pkt.power_watts);
   }
@@ -2524,6 +2836,290 @@ private:
       vx = 0.0;
     }
 
+    // Remember what we were actually told to do; the dig monitor compares
+    // this against real-world progress (see dig_monitor_tick). Stamped
+    // because a command that stopped ARRIVING must not keep counting as a
+    // command: when a Nav2 goal aborts, cmd_vel simply goes silent, and a
+    // stale non-zero value here would let the detector accumulate evidence
+    // against a robot that is no longer being asked to move at all.
+    last_cmd_vx_ = vx;
+    last_cmd_vel_time_ = now();
+    have_cmd_vel_ = true;
+
+    // While escaping a dig, WE own the wire. Drop the incoming command
+    // entirely instead of forwarding it: the controller that dug the hole is
+    // still asking to drive forward into it, and the escape is a bounded,
+    // deliberately un-overridable manoeuvre. Normal command flow resumes the
+    // moment the budget is spent.
+    if (dig_escaping_)
+    {
+      return;
+    }
+
+    send_cmd_vel_packet(vx, wz);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Wheel-slip dig detection + bounded reverse escape
+  // ---------------------------------------------------------------------------
+  //
+  // See mowgli_hardware/dig_detector.hpp for WHY this lives here and why the
+  // wheel-derived checks elsewhere in the stack cannot see this failure.
+
+  void on_filtered_map_odom(nav_msgs::msg::Odometry::ConstSharedPtr msg)
+  {
+    last_map_pose_x_ = msg->pose.pose.position.x;
+    last_map_pose_y_ = msg->pose.pose.position.y;
+    // Worst axis of the position block; the detector compares a scalar
+    // distance so the larger sigma is the honest one to gate on.
+    // MAJOR AXIS of the xy covariance ellipse, not max(var_xx, var_yy).
+    // fusion_graph's marginal is strongly anisotropic (non-holonomic wheel
+    // factor: sigma_x 0.05 vs sigma_y 0.005), so once that matrix is
+    // published in the map frame the diagonal alone is heading-dependent —
+    // it swings between the minor and major axis as the robot turns, making
+    // the trust gate flicker for reasons that have nothing to do with how
+    // well we know where we are. The major axis is frame-invariant.
+    const double var_xx = msg->pose.covariance[0];
+    const double var_yy = msg->pose.covariance[7];
+    const double var_xy = 0.5 * (msg->pose.covariance[1] + msg->pose.covariance[6]);
+    const double mean = 0.5 * (var_xx + var_yy);
+    const double diff = 0.5 * (var_xx - var_yy);
+    const double radicand = std::max(0.0, diff * diff + var_xy * var_xy);
+    last_map_sigma_ = std::sqrt(std::max(0.0, mean + std::sqrt(radicand)));
+    last_map_pose_time_ = now();
+    have_map_pose_ = true;
+  }
+
+  /// True when it is safe for US to command motion. The firmware remains the
+  /// sole safety authority (Invariant 9) — this only ever declines to act.
+  [[nodiscard]] bool dig_escape_allowed() const
+  {
+    return !emergency_active_ && !fw_latched_emergency_ && !is_charging_;
+  }
+
+  /// Drop the wheel/map baselines so the next live tick starts a fresh
+  /// interval. Called whenever ticks are skipped (escape, re-arm window,
+  /// clock jump): without it, the first tick after the gap measures the
+  /// WHOLE gap as one step, fabricating travel that never happened inside a
+  /// single detector interval.
+  void dig_invalidate_baselines()
+  {
+    have_wheel_baseline_ = false;
+    DigResetWindow(dig_state_);  // also drops the window's map anchor
+  }
+
+  void dig_monitor_tick()
+  {
+    const rclcpp::Time tick_now = now();
+    const double dt = have_dig_tick_ ? (tick_now - last_dig_tick_).seconds() : 0.0;
+    last_dig_tick_ = tick_now;
+    have_dig_tick_ = true;
+
+    if (dt <= 0.0 || dt > 1.0)
+    {
+      dig_invalidate_baselines();
+      return;  // first tick, clock jump, or a stall in our own timer
+    }
+
+    // ── Escape in progress: we own the wire until the budget is spent ──────
+    if (dig_escaping_)
+    {
+      if (!dig_escape_allowed())
+      {
+        // Emergency asserted (or we docked) mid-escape — abandon it. The
+        // firmware is already cutting the motors; do not fight it.
+        RCLCPP_WARN(get_logger(), "Dig escape aborted: emergency or charging asserted.");
+        dig_escaping_ = false;
+        dig_escape_state_ = DigEscapeState{};
+        dig_invalidate_baselines();
+        return;
+      }
+
+      const double vx = DigEscapeStep(dig_escape_cfg_, dig_escape_state_, dt);
+      send_cmd_vel_packet(vx, 0.0);
+
+      if (DigEscapeDone(dig_escape_cfg_, dig_escape_state_))
+      {
+        RCLCPP_INFO(get_logger(),
+                    "Dig escape complete: reversed %.2f m in %.1f s. Holding stop; "
+                    "navigation may resume.",
+                    dig_escape_state_.travelled,
+                    dig_escape_state_.elapsed);
+        send_cmd_vel_packet(0.0, 0.0);
+        dig_escaping_ = false;
+        dig_escape_state_ = DigEscapeState{};
+        dig_invalidate_baselines();
+        // Don't re-arm instantly: the encoders need a moment of honest
+        // motion before their travel means anything again.
+        dig_rearm_deadline_ = tick_now + rclcpp::Duration::from_seconds(dig_rearm_delay_s_);
+      }
+      return;
+    }
+
+    // ── Detection ─────────────────────────────────────────────────────────
+    if (tick_now < dig_rearm_deadline_)
+    {
+      dig_invalidate_baselines();
+      return;
+    }
+
+    const double wheel_total = odometry_publisher_.tyre_travelled();
+    const double wheel_step = have_wheel_baseline_ ? (wheel_total - last_wheel_total_) : 0.0;
+    last_wheel_total_ = wheel_total;
+    have_wheel_baseline_ = true;
+
+    // No usable fused pose (not yet received, or stale) -> stand down. The
+    // firmware backstop still covers the blocked-wheel case meanwhile.
+    const bool pose_fresh =
+        have_map_pose_ && (tick_now - last_map_pose_time_).seconds() < dig_pose_timeout_s_;
+    if (!pose_fresh)
+    {
+      dig_invalidate_baselines();
+      return;
+    }
+
+    // Treat a command that has stopped arriving as no command at all.
+    const bool cmd_fresh =
+        have_cmd_vel_ && (tick_now - last_cmd_vel_time_).seconds() < dig_cmd_timeout_s_;
+    const double cmd_vx = cmd_fresh ? last_cmd_vx_ : 0.0;
+
+    // A stale gyro means the turn exclusion cannot be evaluated. Report a
+    // yaw rate above any plausible threshold so DigDecide stands down rather
+    // than comparing wheels to map through an unknown rotation.
+    const bool gyro_fresh =
+        have_gyro_ && (tick_now - last_gyro_time_).seconds() < dig_gyro_timeout_s_;
+    const double yaw_rate =
+        gyro_fresh ? last_gyro_yaw_rate_ : std::numeric_limits<double>::infinity();
+
+    const bool gnss_fresh = gnssObservationFresh();
+    const double trust_sigma =
+        DigTrustSigma(gnss_fresh, dig_gnss_rtk_fixed_, dig_gnss_acc_m_ >= 0.0, dig_gnss_acc_m_);
+
+    // The map side goes in as a POSITION: DigDecide measures net displacement
+    // across the window from its own anchor. Feeding it per-tick steps summed
+    // a path length that grew with estimator wander and with the monitor rate
+    // — see dig_detector.hpp.
+    const DigVerdict verdict = DigDecide(dig_cfg_,
+                                         dig_state_,
+                                         cmd_vx,
+                                         wheel_step,
+                                         last_map_pose_x_,
+                                         last_map_pose_y_,
+                                         trust_sigma,
+                                         yaw_rate,
+                                         dt);
+
+    if (verdict.action != DigAction::kDig)
+    {
+      return;
+    }
+
+    on_dig_detected(verdict);
+  }
+
+  void on_dig_detected(const DigVerdict& verdict)
+  {
+    RCLCPP_WARN(get_logger(),
+                "DIG DETECTED at map (%.2f, %.2f): encoders claimed %.2f m but the fused "
+                "pose moved %.2f m (GNSS sigma %.3f m, graph sigma %.3f m). "
+                "Hard stop + bounded reverse.",
+                last_map_pose_x_,
+                last_map_pose_y_,
+                verdict.wheel_dist,
+                verdict.map_dist,
+                dig_gnss_acc_m_,
+                last_map_sigma_);
+
+    // 1. Hard stop, immediately and on the wire — not a request to whichever
+    //    controller is driving, which is the one that just dug the hole.
+    send_cmd_vel_packet(0.0, 0.0);
+
+    // 2. Report the location BEFORE escaping, so map_server marks the spot
+    //    even if the escape is cut short by an emergency.
+    publish_dig_event(verdict);
+
+    // 3. Repeat-dig bookkeeping. Deliberately placed between the per-event
+    //    response and the escape: escalation ADDS a flag, it never replaces
+    //    or suppresses anything the bridge already does for a single dig.
+    note_dig_for_escalation();
+
+    // 4. Begin the bounded reverse (executed by subsequent monitor ticks).
+    dig_escape_state_ = DigEscapeState{};
+    dig_escaping_ = dig_escape_allowed();
+    if (!dig_escaping_)
+    {
+      RCLCPP_WARN(get_logger(),
+                  "Dig escape suppressed: emergency active or robot charging. "
+                  "Stop stands; no reverse commanded.");
+    }
+  }
+
+  /// Record this latch and, if it is the N'th at the same spot, raise the
+  /// escalation flag. Commands NOTHING — see dig_escalation.hpp for why
+  /// stopping the mission belongs to the behaviour tree and not to this
+  /// layer, which only ever reduces motion.
+  void note_dig_for_escalation()
+  {
+    if (!DigEscalationEnabled(dig_escalate_cfg_))
+    {
+      return;
+    }
+
+    const double t = now().seconds();
+    const bool escalate = ShouldEscalate(
+        dig_escalate_cfg_, dig_latch_history_, last_map_pose_x_, last_map_pose_y_, t);
+    const int nearby = DigNearbyLatchCount(dig_latch_history_,
+                                           last_map_pose_x_,
+                                           last_map_pose_y_,
+                                           t,
+                                           dig_escalate_cfg_.radius_m,
+                                           dig_escalate_cfg_.window_s);
+
+    dig_latch_history_ = DigRecordLatch(
+        dig_latch_history_, last_map_pose_x_, last_map_pose_y_, t, dig_escalate_cfg_.window_s);
+
+    if (!escalate || dig_escalated_)
+    {
+      return;  // not yet, or already latched — log and publish exactly once
+    }
+
+    dig_escalated_ = true;
+    RCLCPP_ERROR(get_logger(),
+                 "Dig escalation: %d latches within %.2f m in %.0f s at map (%.2f, %.2f) — "
+                 "the robot cannot free itself here; stopping.",
+                 nearby,
+                 dig_escalate_cfg_.radius_m,
+                 dig_escalate_cfg_.window_s,
+                 last_map_pose_x_,
+                 last_map_pose_y_);
+    publish_dig_escalated();
+  }
+
+  void publish_dig_escalated()
+  {
+    std_msgs::msg::Bool msg;
+    msg.data = dig_escalated_;
+    pub_dig_escalated_->publish(msg);
+  }
+
+  void publish_dig_event(const DigVerdict& verdict)
+  {
+    auto msg = mowgli_interfaces::msg::DigEvent{};
+    msg.header.stamp = now();
+    msg.header.frame_id = "map";
+    msg.position.x = last_map_pose_x_;
+    msg.position.y = last_map_pose_y_;
+    msg.position.z = 0.0;
+    msg.wheel_distance = verdict.wheel_dist;
+    msg.map_distance = verdict.map_dist;
+    // The uncertainty the gate actually trusted, not the graph's marginal.
+    msg.position_sigma = static_cast<float>(dig_gnss_acc_m_);
+    pub_dig_event_->publish(msg);
+  }
+
+  /// Single point where a velocity command reaches the firmware.
+  void send_cmd_vel_packet(double vx, double wz)
+  {
     LlCmdVel pkt{};
     pkt.type = PACKET_ID_LL_CMD_VEL;
     pkt.linear_x = static_cast<float>(vx);
@@ -2539,7 +3135,18 @@ private:
   void on_mower_control(const std::shared_ptr<mowgli_interfaces::srv::MowerControl::Request> req,
                         std::shared_ptr<mowgli_interfaces::srv::MowerControl::Response> res)
   {
-    mow_enabled_ = (req->mow_enabled != 0u);
+    const bool requested_enable = (req->mow_enabled != 0u);
+    // Dry-run inhibit (issue #195). Suppresses an ENABLE only; a DISABLE always
+    // passes through in either state, so a stop can never be swallowed. The
+    // firmware stays the sole blade safety authority — this is NOT an interlock.
+    mow_enabled_ = blade_enable_allowed(requested_enable, mowing_enabled_);
+
+    if (requested_enable && !mow_enabled_)
+    {
+      RCLCPP_WARN(get_logger(),
+                  "MowerControl: blade enable SUPPRESSED — mowing_enabled=false (dry run). "
+                  "Set mowing_enabled: true in mowgli_robot.yaml and restart ROS2 to mow.");
+    }
 
     RCLCPP_INFO(get_logger(),
                 "MowerControl: mow_enabled=%s mow_direction=%u",
@@ -2549,6 +3156,8 @@ private:
     // Send blade command to STM32
     send_blade_command(mow_enabled_ ? 1u : 0u, req->mow_direction);
 
+    // The request was accepted and acted on — a suppressed enable is a
+    // configured behaviour, not a failure.
     res->success = true;
   }
 
@@ -2590,6 +3199,83 @@ private:
   rclcpp::Publisher<sensor_msgs::msg::Imu>::SharedPtr pub_dock_heading_;
 
   rclcpp::Subscription<geometry_msgs::msg::TwistStamped>::SharedPtr sub_cmd_vel_;
+
+  // ── Wheel-slip dig detection state (see dig_detector.hpp) ────────────────
+  rclcpp::Publisher<mowgli_interfaces::msg::DigEvent>::SharedPtr pub_dig_event_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_filtered_map_;
+  rclcpp::TimerBase::SharedPtr timer_dig_monitor_;
+
+  bool dig_detect_enabled_{true};
+  double dig_monitor_rate_{10.0};
+  double dig_pose_timeout_s_{1.0};
+  /// Settling time after an escape before the detector may latch again [s].
+  /// Not a parameter: it is a property of the manoeuvre (the encoders need a
+  /// moment of honest motion before their travel means anything), not a
+  /// site-tunable preference.
+  static constexpr double dig_rearm_delay_s_ = 2.0;
+
+  DigDetectorCfg dig_cfg_;
+  DigDetectorState dig_state_;
+  DigEscapeCfg dig_escape_cfg_;
+  DigEscapeState dig_escape_state_;
+  bool dig_escaping_{false};
+  rclcpp::Time dig_rearm_deadline_{0, 0, RCL_ROS_TIME};
+
+  // ── Repeat-dig escalation (see dig_escalation.hpp) ───────────────────────
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_dig_escalated_;
+  DigEscalationCfg dig_escalate_cfg_;
+  DigLatchHistory dig_latch_history_;
+  /// Latched once the robot proves it cannot free itself at one spot. Cleared
+  /// only when the robot reaches the charger: mating with the dock is
+  /// unambiguous proof it physically left the obstruction, whether the
+  /// operator carried it out or it drove home. Nothing else clears it, so a
+  /// robot still sitting against the object cannot quietly resume.
+  bool dig_escalated_{false};
+
+  /// Latest commanded forward velocity, captured in on_cmd_vel, with the
+  /// time it arrived — a command that goes silent must stop counting.
+  double last_cmd_vx_{0.0};
+  bool have_cmd_vel_{false};
+  rclcpp::Time last_cmd_vel_time_{0, 0, RCL_ROS_TIME};
+  /// A cmd_vel older than this no longer counts as "commanded to move" [s].
+  /// Controllers publish at 10-20 Hz, so this is many missed cycles.
+  static constexpr double dig_cmd_timeout_s_ = 0.5;
+
+  /// Fused-pose (map-frame) tracking.
+  bool have_map_pose_{false};
+  double last_map_pose_x_{0.0};
+  double last_map_pose_y_{0.0};
+  double last_map_sigma_{0.0};
+  rclcpp::Time last_map_pose_time_{0, 0, RCL_ROS_TIME};
+
+  /// Receiver-reported position quality, for the dig detector's trust gate.
+  /// The factor graph's own marginal is NOT usable for this — see
+  /// dig_detector.hpp.
+  bool dig_gnss_rtk_fixed_{false};
+  double dig_gnss_acc_m_{-1.0};
+  /// Existing hardware GNSS trust timeout. It now governs both the dig trust
+  /// gate and the quality forwarded to the lock LED; only a genuinely new
+  /// receiver observation refreshes it.
+  double dig_gnss_timeout_s_{2.0};
+  mowgli_interfaces::gnss_observation_freshness::PhysicalObservationTracker
+      gnss_observation_freshness_;
+  bool gnss_freshness_initialized_{false};
+  bool last_gnss_observation_fresh_{false};
+
+  /// Calibrated gyro yaw rate, for the dig detector's turn exclusion. Gyro,
+  /// never wheels — see dig_detector.hpp.
+  bool have_gyro_{false};
+  double last_gyro_yaw_rate_{0.0};
+  rclcpp::Time last_gyro_time_{0, 0, RCL_ROS_TIME};
+  double dig_gyro_timeout_s_{0.5};
+
+  /// Per-tick baseline for the wheel side. The map side needs no baseline
+  /// here — DigDecide anchors it once per window and measures net
+  /// displacement from that anchor.
+  bool have_wheel_baseline_{false};
+  double last_wheel_total_{0.0};
+  bool have_dig_tick_{false};
+  rclcpp::Time last_dig_tick_{0, 0, RCL_ROS_TIME};
   rclcpp::Subscription<mowgli_interfaces::msg::GnssStatus>::SharedPtr sub_gnss_status_;
   rclcpp::Subscription<mowgli_interfaces::msg::HighLevelStatus>::SharedPtr sub_hl_status_;
 
@@ -2647,6 +3333,8 @@ private:
   // Lift recovery mode: blade off on lift, no emergency, auto-resume
   bool lift_recovery_mode_{false};
   double lift_blade_resume_delay_sec_{1.0};
+  // mowgli_robot.yaml `mowing_enabled` — dry-run inhibit, see blade_gate.hpp.
+  bool mowing_enabled_{true};
   bool lift_detected_{false};
   rclcpp::Time lift_start_time_;
   bool blade_was_enabled_before_lift_{false};
@@ -2739,6 +3427,7 @@ private:
   // Blade motor state (updated from LlBladeStatus packets)
   bool blade_active_{false};
   float blade_rpm_{0.0f};
+  rclcpp::Time blade_status_time_{0, 0, RCL_ROS_TIME};
   float blade_temperature_{0.0f};
   float blade_esc_current_{0.0f};
   uint8_t last_reset_cause_{RESET_CAUSE_UNKNOWN};
@@ -2780,6 +3469,12 @@ private:
   double imu_cal_offset_gx_{0.0}, imu_cal_offset_gy_{0.0}, imu_cal_offset_gz_{0.0};
   double imu_cal_cov_ax_{0.01}, imu_cal_cov_ay_{0.01};
   double imu_cal_cov_gx_{0.1}, imu_cal_cov_gy_{0.1}, imu_cal_cov_gz_{0.1};
+
+  // Dead-IMU watch (imu_liveness.hpp). Detection only; nothing gates on it.
+  static constexpr double kImuPacketRateHz = 90.0;
+  static constexpr int kImuDeadRepeatLogMs = 30000;
+  ImuLivenessState imu_liveness_{};
+  rclcpp::Time imu_dead_last_log_{};
 
   bool dock_pose_written_{false};
 };

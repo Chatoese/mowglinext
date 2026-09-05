@@ -25,6 +25,7 @@ import {useManualMode} from "./map/hooks/useManualMode.ts";
 import {useMapEditing} from "./map/hooks/useMapEditing.ts";
 import {useMapStreams} from "./map/hooks/useMapStreams.ts";
 import {useMapFiles, type ImportOpenMowerSummary} from "./map/hooks/useMapFiles.ts";
+import {useResetMowingProgress} from "./map/hooks/useResetMowingProgress.tsx";
 import {ImportOpenMowerModal} from "./map/components/ImportOpenMowerModal.tsx";
 import {NewAreaModal} from "./map/components/NewAreaModal.tsx";
 import {EditAreaModal} from "./map/components/EditAreaModal.tsx";
@@ -53,9 +54,10 @@ const DYN_OBSTACLE_INTERACTIVE_LAYERS = ['dyn-obstacle-fill'];
 export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const {notification} = App.useApp();
     const {t} = useTranslation();
-    const {colors} = useThemeMode();
+    const {colors, displayMode} = useThemeMode();
     const isMobile = useIsMobile();
     const mowerAction = useMowerAction()
+    const resetMowingProgress = useResetMowingProgress()
 
     // Brand tokens for the Mapbox display-only layers (dock, mower, lidar).
     // Shared between the compact and full render branches so the two stay in
@@ -205,21 +207,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // filter (no feature rebuild). Only the full map passes withHighlight; the
     // compact overview just shows the fill/outline/label.
     const renderDynObstacleLayers = (withHighlight: boolean) => (
-        <>
-            <Layer type={"fill"} id={"dyn-obstacle-fill"}
+        [
+            <Layer key={"dyn-obstacle-fill"} type={"fill"} id={"dyn-obstacle-fill"}
                 filter={['==', ['get', 'feature_type'], 'dyn-obstacle']}
-                paint={{'fill-color': ['get', 'color']}}/>
-            <Layer type={"line"} id={"dyn-obstacle-outline"}
+                paint={{'fill-color': ['get', 'color']}}/>,
+            <Layer key={"dyn-obstacle-outline"} type={"line"} id={"dyn-obstacle-outline"}
                 filter={['==', ['get', 'feature_type'], 'dyn-obstacle']}
-                paint={{'line-color': LAYER_COLORS.lidarHit, 'line-width': 2}}/>
-            {withHighlight && (
-                <Layer type={"line"} id={"dyn-obstacle-highlight"}
+                paint={{'line-color': LAYER_COLORS.lidarHit, 'line-width': 2}}/>,
+            ...(withHighlight ? [
+                <Layer key={"dyn-obstacle-highlight"} type={"line"} id={"dyn-obstacle-highlight"}
                     filter={['all',
                         ['==', ['get', 'feature_type'], 'dyn-obstacle'],
                         ['==', ['get', 'obs_id'], selectedObstacleId ?? -1]]}
-                    paint={{'line-color': LAYER_COLORS.lidarMiss, 'line-width': 4}}/>
-            )}
-            <Layer type={"symbol"} id={"dyn-obstacle-label"}
+                    paint={{'line-color': LAYER_COLORS.lidarMiss, 'line-width': 4}}/>,
+            ] : []),
+            <Layer key={"dyn-obstacle-label"} type={"symbol"} id={"dyn-obstacle-label"}
                 filter={['==', ['get', 'feature_type'], 'dyn-obstacle']}
                 layout={{
                     'text-field': ['concat', '#', ['get', 'obs_label']],
@@ -231,8 +233,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                     'text-color': LAYER_COLORS.labelText,
                     'text-halo-color': LAYER_COLORS.labelHalo,
                     'text-halo-width': 1.5,
-                }}/>
-        </>
+                }}/>,
+        ]
     );
 
     const [mowingAreas, setMowingAreas] = useState<{ key: string, label: string, feat: Feature }[]>([])
@@ -307,8 +309,13 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             const navigationAreas = buildFeatures(map.navigation_areas??[], "navigation")
             newFeatures = {...workingAreas, ...navigationAreas}
 
-            const dock_lonlat = transpose(offsetX, offsetY, datum, map?.dock_y!!, map?.dock_x!!)
-            newFeatures["dock"] = new DockFeatureBase(dock_lonlat, map?.dock_heading ?? 0);
+            // dock_x/dock_y are optional on the wire. `map?.dock_y!` claimed
+            // otherwise and pushed `undefined` into transpose(), painting the
+            // dock at NaN; skip the marker instead when the pose is absent.
+            if (map.dock_x !== undefined && map.dock_y !== undefined) {
+                const dock_lonlat = transpose(offsetX, offsetY, datum, map.dock_y, map.dock_x)
+                newFeatures["dock"] = new DockFeatureBase(dock_lonlat, map.dock_heading ?? 0);
+            }
         }
         if (path?.poses) {
             // Coverage plan: the full F2C route (headland rings + every swath)
@@ -336,8 +343,15 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 segment = [];
             };
             for (const pose of path.poses) {
-                const x = pose.pose?.position?.x!;
-                const y = pose.pose?.position?.y!;
+                const x = pose.pose?.position?.x;
+                const y = pose.pose?.position?.y;
+                // A pose without coordinates cannot be drawn — break the
+                // polyline there rather than feeding NaN into transpose().
+                if (x === undefined || y === undefined) {
+                    flushSegment();
+                    prev = null;
+                    continue;
+                }
                 if (prev && Math.hypot(x - prev.x, y - prev.y) > SUBPATH_GAP_M) {
                     flushSegment();
                 }
@@ -347,8 +361,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             flushSegment();
         }
         if (plan?.poses) {
-            const coordinates = plan.poses.map((pose) => {
-                return transpose(offsetX, offsetY, datum, pose.pose?.position?.y!, pose.pose?.position?.x!)
+            const coordinates = plan.poses.flatMap((pose) => {
+                const x = pose.pose?.position?.x;
+                const y = pose.pose?.position?.y;
+                if (x === undefined || y === undefined) return [];
+                return [transpose(offsetX, offsetY, datum, y, x)];
             });
             const feature = new ActivePathFeature("plan", coordinates);
             newFeatures[feature.id] = feature
@@ -1087,7 +1104,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             })()
                         }}
                         stateName={highLevelStatus.highLevelStatus.state_name}
+                        highLevelState={highLevelStatus.highLevelStatus.state}
                         emergency={highLevelStatus.highLevelStatus.emergency}
+                        onResetMowingProgress={resetMowingProgress}
                         {...mowerActions}
                     />
                 )}
@@ -1116,13 +1135,15 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 )}
                 {/* Desktop: View mode — bottom glass toolbar */}
                 {!isMobile && !editMap && (
-                    <div style={{position: 'absolute', bottom: 12, left: 16, right: 16, zIndex: 10, background: colors.glassBackground, backdropFilter: 'blur(22px) saturate(140%)', WebkitBackdropFilter: 'blur(22px) saturate(140%)', borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, padding: '10px 14px'}}>
+                    <div style={{position: 'absolute', bottom: 12, left: 16, right: 16, zIndex: 10, background: colors.glassBackground, backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, WebkitBackdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, padding: '10px 14px'}}>
                         <MapToolbar
                             manualMode={manualMode}
                             useSatellite={useSatellite}
                             mowingAreas={mowingAreas}
                             stateName={highLevelStatus.highLevelStatus.state_name}
+                            highLevelState={highLevelStatus.highLevelStatus.state}
                             emergency={highLevelStatus.highLevelStatus.emergency}
+                            onResetMowingProgress={resetMowingProgress}
                             pitched={pitched}
                             onTogglePitch={togglePitch}
                             onEditMap={handleEditMap}
@@ -1145,7 +1166,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 )}
                 {/* Desktop: Right panel — areas list + offset */}
                 {!isMobile && (
-                    <div style={{position: 'absolute', top: 12, right: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 0, width: 240, maxHeight: 'calc(100% - 32px)', background: colors.glassBackground, backdropFilter: 'blur(22px) saturate(140%)', WebkitBackdropFilter: 'blur(22px) saturate(140%)', borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, overflow: 'hidden'}}>
+                    <div style={{position: 'absolute', top: 12, right: 16, zIndex: 10, display: 'flex', flexDirection: 'column', gap: 0, width: 240, maxHeight: 'calc(100% - 32px)', background: colors.glassBackground, backdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, WebkitBackdropFilter: displayMode === 'visual' ? 'blur(22px) saturate(140%)' : undefined, borderRadius: 18, border: colors.glassBorder, boxShadow: colors.glassShadow, overflow: 'hidden'}}>
                         <AreasListPanel
                             areas={areasList}
                             onAreaClick={editMap ? handleAreaSelect : undefined}

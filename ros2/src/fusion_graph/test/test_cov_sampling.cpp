@@ -41,12 +41,14 @@ fg::GraphParams MakeParams()
   // whose float rounding occasionally lands a hair BELOW an exact 0.1 s
   // period and makes Tick() skip the node (rate gate `dt < node_period_s`).
   gp.node_period_s = 0.05;
-  // Legacy FIXED wheel σ model with a deliberately huge per-node σ_x, so a
-  // node without a GPS unary has an unmistakably large marginal — the test
-  // then cleanly separates "sampled the GPS node" from "sampled the tip".
-  gp.wheel_sigma_x_per_m = 0.0;
-  gp.wheel_sigma_x = 1.0;
-  gp.wheel_sigma_y = 0.005;
+  // Deliberately huge along-track random walk so a node without a GPS unary
+  // has an unmistakably large marginal — the test then cleanly separates
+  // "sampled the GPS node" from "sampled the tip". Steps are 0.5 m/s · 0.1 s
+  // = 0.05 m, so k = 4.5 m/sqrt(m) gives sigma_x = 4.5*sqrt(0.05) = 1.0 m per
+  // node (creep floor off to keep it exact).
+  gp.wheel_sigma_x_per_sqrt_m = 4.5;
+  gp.wheel_sigma_y_per_sqrt_m = 0.005;
+  gp.wheel_creep_speed_mps = 0.0;
   gp.wheel_sigma_theta = 0.01;
   gp.gyro_sigma_theta = 0.005;
   gp.stationary_node_period_s = 0.0;  // a node every tick

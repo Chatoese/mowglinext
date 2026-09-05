@@ -307,6 +307,35 @@ public:
 };
 
 // ---------------------------------------------------------------------------
+// IsDigEscalated — the robot has latched the dig detector repeatedly at one
+// spot and cannot free itself there (issue #500).
+// ---------------------------------------------------------------------------
+
+/// Returns SUCCESS while /hardware_bridge/dig_escalated is true, i.e. the
+/// bridge has seen dig_escalate_count latches inside dig_escalate_radius_m
+/// within dig_escalate_window_s. A single dig is handled entirely by the
+/// bridge (hard stop, bounded reverse) and by map_server's pending keepout,
+/// and does NOT set this; repeated latches at one spot mean the next planned
+/// manoeuvre keeps aiming the robot back at the same physical object, which
+/// no amount of reversing or keeping-out can fix. The bridge only raises the
+/// flag — stopping the mission is the tree's job.
+class IsDigEscalated : public BT::ConditionNode
+{
+public:
+  IsDigEscalated(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+// ---------------------------------------------------------------------------
 // IsLethalBoundaryViolation
 // ---------------------------------------------------------------------------
 
@@ -676,45 +705,6 @@ public:
 };
 
 // ---------------------------------------------------------------------------
-// IsStartCellBlocked
-// ---------------------------------------------------------------------------
-
-/// Returns SUCCESS (and CONSUMES the recorded error code) when the most
-/// recent NavigateToPose dispatch failed with START_OCCUPIED — the global
-/// planner rejected the robot's OWN start cell. FAILURE otherwise.
-///
-/// Field problem this solves (2026-08-09): after an RTK loss+return the
-/// fused pose can land inside the boundary inflation or a keepout cell.
-/// The robot is physically fine, but every transit and docking plan is
-/// rejected instantly ("Start occupied") and the session bleeds out without
-/// the robot ever moving. This condition guards the BlockedStartEscape
-/// recovery (blade-off BackUp out of the lethal cell) in main_tree.xml.
-///
-/// Source signal: ctx->last_nav_error_code, recorded by the nav clients'
-/// result callbacks (navErrorRecordingOptions in coverage_nodes.cpp).
-/// CONSUMING read: the code is reset to 0 on SUCCESS so one recorded
-/// failure triggers at most one escape — a further START_OCCUPIED failure
-/// after the escape re-records the code and re-arms the branch. The field
-/// is BT-tick-serialized (result callbacks share the node's default
-/// MutuallyExclusive callback group), so no context_mutex is needed — see
-/// the field's doc in bt_context.hpp.
-class IsStartCellBlocked : public BT::ConditionNode
-{
-public:
-  IsStartCellBlocked(const std::string& name, const BT::NodeConfig& config)
-      : BT::ConditionNode(name, config)
-  {
-  }
-
-  static BT::PortsList providedPorts()
-  {
-    return {};
-  }
-
-  BT::NodeStatus tick() override;
-};
-
-// ---------------------------------------------------------------------------
 // IsScanStale
 // ---------------------------------------------------------------------------
 
@@ -816,6 +806,51 @@ public:
                               3.0,
                               "collision_monitor_state freshness bound (s); stale = inert"),
     };
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+// ---------------------------------------------------------------------------
+// IsCoverageStartBlocked
+// ---------------------------------------------------------------------------
+
+/// Returns SUCCESS when the FollowStrip pass that just failed did so because
+/// the ROBOT'S OWN POSE is a cell nav2 refuses to plan from (every blade-off
+/// sub-path transit came back START_OCCUPIED and zero swaths were mowed).
+/// FAILURE otherwise.
+///
+/// Field problem this solves (issue #487, 2026-08-24): the robot undocked into
+/// the inflated keepout around a 0.25 m obstacle circle. SmacPlanner2D has no
+/// start tolerance, so all 26 plan calls answered "Start occupied", FollowStrip
+/// skipped all four sub-paths in a row, and the whole field was declared
+/// unmowable at 0 % coverage. The area was perfectly mowable — a second attempt
+/// 13 minutes later completed it at 100 %.
+///
+/// CONSUMING condition: it clears ctx->coverage_start_blocked on read, so the
+/// recovery branch fires exactly once per blocked pass and a later, unrelated
+/// FollowStrip failure cannot re-trigger it. (ctx->start_blocked_area is a
+/// SEPARATE field with a separate consumer — GetNextUnmowedArea — so this read
+/// does not disturb the retirement-budget exemption.)
+///
+/// SAFETY: this node also ARMS the bounded escape motion
+/// (ctx->start_blocked_escape_armed, consumed by EscapeStartBlocked). It is the
+/// ONLY place that token is set, which is what makes the escape provably unable
+/// to fire on any other failure. See mowgli_behavior/start_blocked_escape.hpp
+/// for the bounds and the stand-down conditions; arming is not itself a
+/// commitment to move — every stand-down there degrades to the non-motion
+/// recovery this node originally shipped with.
+class IsCoverageStartBlocked : public BT::ConditionNode
+{
+public:
+  IsCoverageStartBlocked(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
   }
 
   BT::NodeStatus tick() override;

@@ -34,6 +34,7 @@
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <std_msgs/msg/bool.hpp>
 
+#include "mowgli_map/internal_helpers.hpp"
 #include <grid_map_core/GridMap.hpp>
 #include <grid_map_core/GridMapMath.hpp>
 #include <grid_map_core/iterators/CircleIterator.hpp>
@@ -56,6 +57,18 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   map_size_y_ = declare_parameter<double>("map_size_y", 20.0);
   map_frame_ = declare_parameter<std::string>("map_frame", "map");
   tool_width_ = declare_parameter<double>("tool_width", 0.18);
+  // Wheel-slip dig keepout (see on_dig_event). The keepout is stamped as a
+  // PENDING proposal - live in the mask for this session, never written to
+  // areas.dat until the operator accepts it.
+  //
+  // Size: it used to default to one tool width (0.18 m), which is NARROWER
+  // THAN THE CHASSIS (0.60 m x 0.40 m footprint). Issue #500 recorded the
+  // consequence: 3 dig latches in 18.4 s within 0.13 m - the escape reverses
+  // and the controller drives the body straight back over a keepout the body
+  // does not fit around. Default is now kDefaultDigKeepoutSizeM, one chassis
+  // length, so routing around the patch actually clears it.
+  dig_obstacle_enabled_ = declare_parameter<bool>("dig_obstacle_enabled", true);
+  dig_obstacle_size_ = declare_parameter<double>("dig_obstacle_size", kDefaultDigKeepoutSizeM);
   yaw_convergence_threshold_rad_ =
       declare_parameter<double>("yaw_convergence_threshold_rad", 0.00873);  // 0.5°
   yaw_convergence_window_s_ = declare_parameter<double>("yaw_convergence_window_s", 5.0);
@@ -72,6 +85,11 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   robot_yaml_path_ = declare_parameter<std::string>("robot_yaml_path", kRuntimeRobotYaml);
   publish_rate_ = declare_parameter<double>("publish_rate", 1.0);
   mow_progress_publish_period_s_ = declare_parameter<double>("mow_progress_publish_period_s", 2.0);
+  mow_progress_tool_frame_ =
+      declare_parameter<std::string>("mow_progress_tool_frame", "blade_link");
+  mow_progress_min_blade_rpm_ = declare_parameter<double>("mow_progress_min_blade_rpm", 1000.0);
+  mow_progress_blade_telemetry_max_age_s_ =
+      declare_parameter<double>("mow_progress_blade_telemetry_max_age_s", 1.0);
   keepout_nav_margin_ = declare_parameter<double>("keepout_nav_margin", 0.45);
   // Hard area-boundary enforcement: when true (operator default), the keepout
   // mask marks every cell OUTSIDE the union of all areas (mowing + navigation)
@@ -373,12 +391,39 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
         on_obstacles(std::move(msg));
       });
 
+  // ── Wheel-slip dig reports (hardware_bridge_node) ─────────────────────
+  // The bridge detects the robot digging a hole (wheels turning, GNSS pose
+  // not moving), hard-stops and reverses out. We stamp a PENDING keepout at
+  // that location so the next coverage pass routes around it instead of
+  // driving back into the same patch; making it permanent is the operator's
+  // call (~/promote_obstacle{pending_id}). TRANSIENT_LOCAL matches the
+  // bridge's publisher so a dig that happened while we were restarting
+  // still lands.
+  if (dig_obstacle_enabled_)
+  {
+    dig_event_sub_ = create_subscription<mowgli_interfaces::msg::DigEvent>(
+        "/hardware_bridge/dig_event",
+        rclcpp::QoS(10).transient_local(),
+        [this](mowgli_interfaces::msg::DigEvent::ConstSharedPtr msg)
+        {
+          on_dig_event(std::move(msg));
+        });
+  }
+
   promote_obstacle_srv_ = create_service<mowgli_interfaces::srv::PromoteObstacle>(
       "~/promote_obstacle",
       [this](const mowgli_interfaces::srv::PromoteObstacle::Request::SharedPtr req,
              mowgli_interfaces::srv::PromoteObstacle::Response::SharedPtr res)
       {
         on_promote_obstacle(req, res);
+      });
+
+  discard_obstacle_srv_ = create_service<mowgli_interfaces::srv::ClearObstacle>(
+      "~/discard_obstacle",
+      [this](const mowgli_interfaces::srv::ClearObstacle::Request::SharedPtr req,
+             mowgli_interfaces::srv::ClearObstacle::Response::SharedPtr res)
+      {
+        on_discard_obstacle(req, res);
       });
 
   // Dock pose: single source of truth is mowgli_robot.yaml. Calibration
@@ -574,7 +619,10 @@ void MapServerNode::on_occupancy_grid(nav_msgs::msg::OccupancyGrid::ConstSharedP
 
 void MapServerNode::on_mower_status(mowgli_interfaces::msg::Status::ConstSharedPtr msg)
 {
-  mow_blade_enabled_ = msg->mow_enabled;
+  mow_blade_requested_ = msg->mow_enabled;
+  mow_blade_active_ = msg->mower_esc_status != 0U;
+  mow_blade_rpm_ = msg->mower_motor_rpm;
+  mow_blade_telemetry_time_ = rclcpp::Time(msg->blade_status_stamp);
   last_is_charging_ = msg->is_charging;
   last_status_time_ = now();
 }
@@ -626,10 +674,49 @@ void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
   last_robot_x_ = x;
   last_robot_y_ = y;
 
-  // Accumulate the mowed footprint while the blade is running.
-  if (mow_blade_enabled_)
+  const rclcpp::Time now_t = now();
+  const bool telemetry_fresh =
+      mow_blade_telemetry_time_.nanoseconds() > 0 &&
+      (now_t - mow_blade_telemetry_time_).seconds() >= 0.0 &&
+      (now_t - mow_blade_telemetry_time_).seconds() <= mow_progress_blade_telemetry_max_age_s_;
+  const auto reason = GetMowProgressInhibitReason(mow_blade_requested_,
+                                                  telemetry_fresh,
+                                                  mow_blade_active_,
+                                                  mow_blade_rpm_,
+                                                  mow_progress_min_blade_rpm_);
+  if (reason != mow_progress_reason_)
   {
-    stamp_mow_progress(x, y);
+    RCLCPP_INFO(get_logger(),
+                "Mow-progress stamping %s: %s",
+                reason == MowProgressInhibitReason::kActive ? "enabled" : "inhibited",
+                ToString(reason));
+    mow_progress_reason_ = reason;
+  }
+
+  if (reason == MowProgressInhibitReason::kActive)
+  {
+    try
+    {
+      const auto tool_tf =
+          tf_buffer_->lookupTransform(map_frame_, mow_progress_tool_frame_, tf2::TimePointZero);
+      stamp_mow_progress(tool_tf.transform.translation.x, tool_tf.transform.translation.y);
+    }
+    catch (const tf2::TransformException& ex)
+    {
+      have_last_mow_tool_position_ = false;
+      RCLCPP_WARN_THROTTLE(get_logger(),
+                           *get_clock(),
+                           5000,
+                           "Mow-progress stamping inhibited: no %s -> %s transform: %s",
+                           map_frame_.c_str(),
+                           mow_progress_tool_frame_.c_str(),
+                           ex.what());
+    }
+  }
+  else
+  {
+    // Never sweep across a period in which cutting was unverified.
+    have_last_mow_tool_position_ = false;
   }
 
   check_boundary_violation(x, y);
@@ -776,21 +863,22 @@ void MapServerNode::on_publish_timer()
       masks_dirty_ = false;
     }
 
-    // Republish the mowed overlay only when it grew, and at most once per
-    // mow_progress_publish_period_s_. Re-serializing the full-extent overlay on
-    // every tick is O(cells) per second while mowing — the dominant steady cost
-    // on a large map. transient_local keeps late subscribers up to date, and
-    // mow_progress_dirty_ stays set until we actually publish, so no growth is
-    // lost between throttled publishes.
-    if (mow_progress_dirty_)
+    // Rebuild the full-extent OccupancyGrid only after coverage changed, then
+    // republish that cached message at the existing throttle interval. Foxglove
+    // WebSocket reconnects do not reliably receive transient_local history.
+    const rclcpp::Time now_t = now();
+    if (last_mow_progress_pub_time_.nanoseconds() == 0 ||
+        (now_t - last_mow_progress_pub_time_).seconds() >= mow_progress_publish_period_s_)
     {
-      const rclcpp::Time now_t = now();
-      if (last_mow_progress_pub_time_.nanoseconds() == 0 ||
-          (now_t - last_mow_progress_pub_time_).seconds() >= mow_progress_publish_period_s_)
+      if (mow_progress_dirty_)
       {
-        publish_mow_progress();
-        last_mow_progress_pub_time_ = now_t;
+        rebuild_mow_progress_cache();
         mow_progress_dirty_ = false;
+      }
+      if (mow_progress_cache_valid_)
+      {
+        publish_cached_mow_progress();
+        last_mow_progress_pub_time_ = now_t;
       }
     }
   }
@@ -808,36 +896,103 @@ void MapServerNode::stamp_mow_progress(double x, double y)
       mow_progress_map_.getSize()(1) != map_.getSize()(1) ||
       mow_progress_map_.getPosition() != map_.getPosition())
   {
-    mow_progress_map_ = grid_map::GridMap({layer});
-    mow_progress_map_.setFrameId(map_frame_);
-    mow_progress_map_.setGeometry(map_.getLength(), map_.getResolution(), map_.getPosition());
-    mow_progress_map_[layer].setConstant(0.0F);
+    initialize_mow_progress_map();
   }
 
   const grid_map::Position center(x, y);
   const double radius = std::max(tool_width_ * 0.5, mow_progress_map_.getResolution());
-  for (grid_map::CircleIterator it(mow_progress_map_, center, radius); !it.isPastEnd(); ++it)
+  const auto stamp_disc = [this, &layer, radius](const grid_map::Position& position)
   {
-    if (mow_progress_map_.at(layer, *it) < 100.0F)
+    for (grid_map::CircleIterator it(mow_progress_map_, position, radius); !it.isPastEnd(); ++it)
     {
-      mow_progress_map_.at(layer, *it) = 100.0F;
-      mow_progress_dirty_ = true;
+      if (mow_progress_map_.at(layer, *it) < 100.0F)
+      {
+        mow_progress_map_.at(layer, *it) = 100.0F;
+        mow_progress_dirty_ = true;
+      }
+    }
+  };
+
+  if (have_last_mow_tool_position_)
+  {
+    const double distance = (center - last_mow_tool_position_).norm();
+    const size_t steps = SweepStepCount(distance, mow_progress_map_.getResolution());
+    for (size_t step = 1; step <= steps; ++step)
+    {
+      const double fraction = static_cast<double>(step) / static_cast<double>(steps);
+      stamp_disc(last_mow_tool_position_ + fraction * (center - last_mow_tool_position_));
     }
   }
+  else
+  {
+    stamp_disc(center);
+  }
+  last_mow_tool_position_ = center;
+  have_last_mow_tool_position_ = true;
 }
 
-void MapServerNode::publish_mow_progress()
+float MapServerNode::mow_progress_value_for_test(double x, double y) const
+{
+  std::lock_guard<std::mutex> lock(map_mutex_);
+  const std::string layer = "mowed";
+  grid_map::Index index;
+  if (!mow_progress_map_.exists(layer) ||
+      !mow_progress_map_.getIndex(grid_map::Position(x, y), index))
+  {
+    return 0.0F;
+  }
+  return mow_progress_map_.at(layer, index);
+}
+
+bool MapServerNode::mow_progress_cache_valid_for_test() const
+{
+  std::lock_guard<std::mutex> lock(map_mutex_);
+  return mow_progress_cache_valid_;
+}
+
+void MapServerNode::rebuild_mow_progress_cache()
 {
   const std::string layer = "mowed";
   if (!mow_progress_map_.exists(layer))
   {
+    mow_progress_cache_valid_ = false;
     return;
   }
-  nav_msgs::msg::OccupancyGrid grid;
   // 0 → unmowed (rendered transparent by the GUI), 100 → mowed. The converter
   // handles the grid_map↔OccupancyGrid index convention correctly.
-  grid_map::GridMapRosConverter::toOccupancyGrid(mow_progress_map_, layer, 0.0F, 100.0F, grid);
-  mow_progress_pub_->publish(grid);
+  grid_map::GridMapRosConverter::toOccupancyGrid(
+      mow_progress_map_, layer, 0.0F, 100.0F, mow_progress_cache_);
+  mow_progress_cache_valid_ = true;
+}
+
+void MapServerNode::publish_cached_mow_progress()
+{
+  if (mow_progress_cache_valid_)
+  {
+    mow_progress_pub_->publish(mow_progress_cache_);
+  }
+}
+
+void MapServerNode::reset_mow_progress()
+{
+  mow_progress_map_ = grid_map::GridMap();
+  mow_progress_dirty_ = false;
+  mow_progress_cache_ = nav_msgs::msg::OccupancyGrid();
+  mow_progress_cache_valid_ = false;
+  last_mow_progress_pub_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+  have_last_mow_tool_position_ = false;
+}
+
+void MapServerNode::initialize_mow_progress_map()
+{
+  const std::string layer = "mowed";
+  reset_mow_progress();
+  mow_progress_map_ = grid_map::GridMap({layer});
+  mow_progress_map_.setFrameId(map_frame_);
+  mow_progress_map_.setGeometry(map_.getLength(), map_.getResolution(), map_.getPosition());
+  mow_progress_map_[layer].setConstant(0.0F);
+  // Refresh the latched publisher with the empty grid after a reset or resize.
+  mow_progress_dirty_ = true;
 }
 
 }  // namespace mowgli_map

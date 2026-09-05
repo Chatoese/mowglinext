@@ -3,7 +3,10 @@ import { useTranslation } from "react-i18next";
 import { Badge, Menu, Tabs } from "antd";
 import {
     AimOutlined,
+    BgColorsOutlined,
+    BulbOutlined,
     CloudOutlined,
+    CloudSyncOutlined,
     CodeOutlined,
     CompassOutlined,
     DashboardOutlined,
@@ -22,6 +25,8 @@ import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { SettingsSection, SectionMeta } from "../../hooks/useSettingsManager.ts";
 
 const SECTION_ICONS: Record<string, React.ReactNode> = {
+    "bg-colors": <BgColorsOutlined />,
+    bulb: <BulbOutlined />,
     tool: <ToolOutlined />,
     dashboard: <DashboardOutlined />,
     global: <GlobalOutlined />,
@@ -35,6 +40,7 @@ const SECTION_ICONS: Record<string, React.ReactNode> = {
     warning: <WarningOutlined />,
     compass: <CompassOutlined />,
     cloud: <CloudOutlined />,
+    "cloud-sync": <CloudSyncOutlined />,
     code: <CodeOutlined />,
 };
 
