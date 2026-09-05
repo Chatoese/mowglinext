@@ -22,7 +22,6 @@
 #include <string>
 #include <vector>
 
-#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "tf2/exceptions.h"
 #include "tf2/time.hpp"
 #include "tf2_ros/buffer.h"

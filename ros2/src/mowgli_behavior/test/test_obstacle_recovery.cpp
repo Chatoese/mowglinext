@@ -32,7 +32,6 @@
 #include "behaviortree_cpp/bt_factory.h"
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_behavior/condition_nodes.hpp"
-#include "nav2_msgs/action/compute_path_to_pose.hpp"
 #include "nav2_msgs/msg/collision_monitor_state.hpp"
 #include <gtest/gtest.h>
 
