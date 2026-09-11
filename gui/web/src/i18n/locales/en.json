@@ -169,6 +169,7 @@
     "bladeOff": "Blade stopped",
     "start": "Start",
     "resume": "Resume",
+    "resumeNow": "Resume now (skip charge)",
     "startFresh": "Start fresh",
     "emergencyStop": "Emergency stop",
     "rearm": "Re-arm",
@@ -596,6 +597,10 @@
     "calibrationTimedOut": "Calibration timed out",
     "cpuTemp": "CPU: {{value}} °C",
     "cpuTempUnknown": "CPU: --",
+    "cpuUsage": "CPU usage",
+    "cpuUsageBadge": "CPU usage: {{value}}%",
+    "cpuUsageUnknown": "CPU usage: --",
+    "cpuUsageHint": "Whole computer, across all cores. Updates about every 10 seconds; two samples are needed for a reading.",
     "crossCheckError": "Error",
     "crossCheckOk": "OK",
     "crossCheckWarn": "Warning",
@@ -1581,6 +1586,8 @@
     "selectExactlyOneToSplit": "Select exactly 1 area to split",
     "selectionMustBePolygon": "Selection must be a polygon area",
     "drawLineAcrossArea": "Draw a line across the area to split it",
+    "deletePointsConfirmTitle": "Delete selected points?",
+    "deletePointsConfirmBody": "The selected points will be removed. If too few points remain to form a polygon, that shape will also be removed. You can undo before saving.",
     "deleteAreaConfirmTitle": "Delete this area?",
     "deleteAreaConfirmBody": "The selected area (and its obstacles) will be removed. You can undo before saving.",
     "deleteAreaConfirmOk": "Delete",
@@ -2355,7 +2362,9 @@
     "critical": "Critical",
     "criticalTooltip": "Critical battery level",
     "criticalRecovery": "Critical Recovery",
-    "criticalRecoveryTooltip": "Leave the critical-battery state once recharged above this %. Hysteresis upper bound, must be greater than Critical."
+    "criticalRecoveryTooltip": "Leave the critical-battery state once recharged above this %. Hysteresis upper bound, must be greater than Critical.",
+    "manualResume": "Manual Resume",
+    "manualResumeTooltip": "Pressing Play while the robot is charging mid-session resumes mowing only above this %. Must be greater than Low (Dock) or the robot re-docks within minutes."
   },
   "settingsSafety": {
     "alertMessage": "Safety settings protect the robot and its surroundings",
@@ -2365,6 +2374,9 @@
     "temperatureThresholdsNote": "Blade-motor temperature is measured and reported only — no layer of the stack stops the blade on temperature. The warning and error thresholds used by the diagnostics (motor_temp_warn_c and motor_temp_error_c, in mowgli_monitoring/config/diagnostics.yaml) can be edited on the Parameters page."
   },
   "settingsObstacles": {
+    "digKeepouts": "Dig obstacles",
+    "digAutoPromotion": "Automatically create dig keepouts",
+    "digKeepoutsDescription": "Create a temporary keepout when wheel slip is detected in a mowing area. Accept the proposal on the map to keep it permanently. When disabled, no dig keepouts are created; dig detection, stopping and recovery remain active. Save and restart ROS2 to apply.",
     "rootZoneHintTitle": "Trees with large roots?",
     "rootZoneHintDescription": "The 2D LiDAR cannot see roots below its scan plane (~10–20 cm). Draw the tree as an obstacle in the map editor and raise the drawn obstacle margin so mowing and transit keep off the root zone.",
     "avoidanceMargins": "Avoidance Margins",
@@ -2395,7 +2407,7 @@
     "transitSpeedTooltip": "Speed when going to/from dock or between zones",
     "mowingPattern": "Mowing Pattern",
     "headlandWidth": "Headland Width",
-    "headlandWidthTooltip": "Width of perimeter strip mowed before the inner field (F2C ConstHL inset). Wired to coverage_server.default_headland_width.",
+    "headlandWidthTooltip": "Width of the perimeter strip mowed before the inner field (F2C ConstHL inset). Wired to coverage_server.default_headland_width, where it is used for ONE thing: the automatic ring count, ceil(headland width / swath spacing). It therefore only has an effect when Headland Passes is set to Auto — with a forced pass count (the shipped default is 2) this value is ignored.",
     "swathOverlap": "Swath Overlap",
     "swathOverlapTooltip": "Extra overlap between adjacent swaths to avoid thin un-mowed strips. F2C swath spacing = tool_width − swath_overlap.",
     "headlandPasses": "Headland Passes",

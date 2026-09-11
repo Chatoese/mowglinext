@@ -26,6 +26,7 @@
 #include "charger.h"
 #include "drivemotor.h"
 #include "emergency.h"
+#include "heartbeat_emergency_policy.hpp"
 #include "nbt.h"
 #include "panel.h"
 #include "pid.hpp"
@@ -39,6 +40,7 @@
 // COBS protocol (replaces rosserial)
 #include "mowgli_comms.h"
 #include "mowgli_protocol.h"
+#include "cmd_vel_safety.hpp"
 
 // Math
 #include <cmath>
@@ -426,14 +428,28 @@ static void on_cmd_vel(const uint8_t *data, size_t len) {
 
   const pkt_cmd_vel_t *pkt = reinterpret_cast<const pkt_cmd_vel_t *>(data);
 
-  last_cmd_vel_tick = HAL_GetTick();
+  const float vx = pkt->linear_x;
+  const float wz = pkt->angular_z;
+
+  /* Firmware is the final safety authority.  Validate before refreshing the
+   * watchdog: NaN defeats ordinary >/< clamps, and an invalid packet must
+   * never preserve or refresh a motion target.  Clear all command state so a
+   * malformed packet deterministically stops the next motor cycle. */
+  mowgli_cmd_vel::SafetyState safety_state{
+      cmd_wz, left_target_mps, right_target_mps, last_cmd_vel_tick};
+  if (!mowgli_cmd_vel::apply_safety(vx, wz, HAL_GetTick(), safety_state)) {
+    cmd_wz = safety_state.cmd_wz;
+    left_target_mps = safety_state.left_target_mps;
+    right_target_mps = safety_state.right_target_mps;
+    return;
+  }
+
+  /* Only a validated command is a new cmd_vel heartbeat. */
+  last_cmd_vel_tick = safety_state.last_valid_tick;
 
   if (main_eOpenmowerStatus == OPENMOWER_STATUS_IDLE) {
     return;
   }
-
-  const float vx = pkt->linear_x;
-  const float wz = pkt->angular_z;
 
   /* Commanded yaw rate for the firmware yaw-rate loop (Option C), read in the
    * motor timebase by motors_handler. Stored raw (pre-IK) so the loop tracks
@@ -1348,7 +1364,10 @@ extern "C" void broadcast_handler() {
     status_pkt.v_charge = charge_voltage;
     status_pkt.v_system = battery_voltage;
     status_pkt.charging_current = current;
-    status_pkt.batt_percentage = 0; // TODO: compute from voltage curve
+    // No verified SoC source exists.  Keep the legacy byte for wire
+    // compatibility; the ROS bridge publishes percentage as unknown (NaN),
+    // not 0 %.  Do not infer SoC from voltage here.
+    status_pkt.batt_percentage = 0;
 
     pkt_reset_cause_t reset_pkt;
     reset_pkt.type = PKT_ID_RESET_CAUSE;

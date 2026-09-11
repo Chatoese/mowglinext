@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <string>
 
 #include "behaviortree_cpp/behavior_tree.h"
@@ -52,6 +53,23 @@ public:
 // ---------------------------------------------------------------------------
 
 /// Returns SUCCESS when the charger relay is enabled (robot is on the dock).
+///
+/// Input ports:
+///   stable_for_sec (double, default "0.0") - debounce window. SUCCESS is only
+///     returned once charger_enabled has read true on every tick for at least
+///     this many seconds. 0.0 reports the RAW bit and is the default precisely
+///     so that every pre-existing <IsCharging/> call site keeps its exact
+///     current semantics; only a site that opts in by naming the port pays for
+///     the debounce.
+///
+/// Why the port exists: the firmware charger bit is not a clean signal. It
+/// stays high for ~100 ms into a BackUp undock (CLAUDE.md invariant 11) and it
+/// can bounce when the mower brushes the dock contacts on a swath that passes
+/// close to the station. Every historical reader of this node treated a
+/// transient as harmless, so the raw bit was fine. ManualChargeGuard is the
+/// first reader for which a transient is a STATE TRANSITION (blade off, stop,
+/// publish CHARGING, wait, publish MOWING), so it needs the bit to have
+/// settled before it acts.
 class IsCharging : public BT::ConditionNode
 {
 public:
@@ -62,10 +80,29 @@ public:
 
   static BT::PortsList providedPorts()
   {
-    return {};
+    return {BT::InputPort<double>("stable_for_sec",
+                                  0.0,
+                                  "Seconds the charger bit must read true "
+                                  "continuously before SUCCESS. 0 = raw bit.")};
   }
 
   BT::NodeStatus tick() override;
+
+private:
+  // Steady-clock stamp of the first tick in the current unbroken run of
+  // charger_enabled == true. Default-constructed (epoch) means "the last tick
+  // saw the charger off", matching the IsNewRain / rain_first_detected_time
+  // idiom. Deliberately PER-INSTANCE rather than on BTContext: the debounced
+  // ManualChargeGuard node must not share a window with the other ten raw
+  // <IsCharging/> nodes elsewhere in the tree.
+  //
+  // BT.CPP halts (and therefore stops ticking) this node whenever an earlier
+  // child of the StripGuards ReactiveSequence goes RUNNING, and halt does not
+  // clear this member. That is deliberate: the only way the stamp survives a
+  // halt is if charging was already true when the halt began, in which case
+  // re-engaging the guard promptly on re-entry is the correct outcome anyway -
+  // the mower really is sitting on the dock.
+  std::chrono::steady_clock::time_point charging_since_{};
 };
 
 // ---------------------------------------------------------------------------
@@ -167,6 +204,42 @@ public:
   static BT::PortsList providedPorts()
   {
     return {BT::InputPort<float>("threshold", 95.0f, "Battery percent threshold")};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+// ---------------------------------------------------------------------------
+// IsManualResumeRequested
+// ---------------------------------------------------------------------------
+
+/// Operator-forced exit from a charge hold. Returns SUCCESS — and CONSUMES
+/// BTContext::manual_resume_requested — when the ~/high_level_control handler
+/// has flagged a COMMAND_START received during CHARGING /
+/// CRITICAL_BATTERY_CHARGING AND the battery is at or above min_battery_pct.
+///
+/// A request below the floor is REFUSED: logged once at WARN, cleared, and the
+/// node returns FAILURE so the wait loop keeps charging. A request older than
+/// BTContext::kManualResumeMaxAgeSec is dropped the same way (stale token from
+/// a branch that never consumed it). With no request pending it is a plain
+/// FAILURE, so the enclosing Fallback falls through to the timed wait.
+///
+/// Input ports:
+///   min_battery_pct (float): floor below which a manual resume is refused;
+///                            the tree pulls {battery_manual_resume_pct}.
+class IsManualResumeRequested : public BT::ConditionNode
+{
+public:
+  IsManualResumeRequested(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {BT::InputPort<float>("min_battery_pct",
+                                 30.0f,
+                                 "Battery percent floor for an operator-forced resume")};
   }
 
   BT::NodeStatus tick() override;

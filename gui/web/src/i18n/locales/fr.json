@@ -169,6 +169,7 @@
     "bladeOff": "Lame arrêtée",
     "start": "Démarrer",
     "resume": "Reprendre",
+    "resumeNow": "Reprendre maintenant (sans attendre la charge)",
     "startFresh": "Redémarrer à zéro",
     "emergencyStop": "Arrêt d'urgence",
     "rearm": "Réarmer",
@@ -596,6 +597,10 @@
     "calibrationTimedOut": "Délai de calibration dépassé",
     "cpuTemp": "CPU : {{value}} °C",
     "cpuTempUnknown": "CPU : --",
+    "cpuUsage": "Utilisation du CPU",
+    "cpuUsageBadge": "Utilisation CPU : {{value}} %",
+    "cpuUsageUnknown": "Utilisation CPU : --",
+    "cpuUsageHint": "Ordinateur entier, tous cœurs confondus. Actualisation environ toutes les 10 secondes ; deux mesures sont nécessaires pour calculer l’utilisation.",
     "crossCheckError": "Erreur",
     "crossCheckOk": "OK",
     "crossCheckWarn": "Avertissement",
@@ -1577,6 +1582,8 @@
     "selectExactlyOneToSplit": "Sélectionnez exactement 1 zone à découper",
     "selectionMustBePolygon": "La sélection doit être une zone polygonale",
     "drawLineAcrossArea": "Tracez une ligne à travers la zone pour la découper",
+    "deletePointsConfirmTitle": "Supprimer les points sélectionnés ?",
+    "deletePointsConfirmBody": "Les points sélectionnés seront supprimés. Si le nombre de points restants ne suffit plus pour former un polygone, cette forme sera également supprimée. Vous pouvez annuler avant de sauvegarder.",
     "deleteAreaConfirmTitle": "Supprimer cette zone ?",
     "deleteAreaConfirmBody": "La zone sélectionnée (et ses obstacles) sera supprimée. Vous pouvez annuler avant d’enregistrer.",
     "deleteAreaConfirmOk": "Supprimer",
@@ -2351,7 +2358,9 @@
     "critical": "Critique",
     "criticalTooltip": "Niveau de batterie critique",
     "criticalRecovery": "Récupération critique",
-    "criticalRecoveryTooltip": "Quitter l'état batterie critique une fois rechargée au-dessus de ce %. Borne supérieure d'hystérésis, doit être supérieure à Critique."
+    "criticalRecoveryTooltip": "Quitter l'état batterie critique une fois rechargée au-dessus de ce %. Borne supérieure d'hystérésis, doit être supérieure à Critique.",
+    "manualResume": "Reprise manuelle",
+    "manualResumeTooltip": "Appuyer sur Lecture pendant une recharge en cours de session ne reprend la tonte qu'au-dessus de ce %. Doit être supérieur à Faible (accostage), sinon le robot retourne à la base en quelques minutes."
   },
   "settingsSafety": {
     "alertMessage": "Les réglages de sécurité protègent le robot et son environnement",
@@ -2361,6 +2370,9 @@
     "temperatureThresholdsNote": "La température du moteur de lame est uniquement mesurée et rapportée — aucune couche de la pile n’arrête la lame en fonction de la température. Les seuils d’alerte et d’erreur utilisés par les diagnostics (motor_temp_warn_c et motor_temp_error_c, dans mowgli_monitoring/config/diagnostics.yaml) se modifient sur la page Paramètres."
   },
   "settingsObstacles": {
+    "digKeepouts": "Obstacles de patinage",
+    "digAutoPromotion": "Créer automatiquement des zones d’exclusion de patinage",
+    "digKeepoutsDescription": "Crée une zone d’exclusion temporaire lorsqu’un patinage est détecté dans une zone de tonte. Acceptez la proposition sur la carte pour la conserver. Si désactivé, aucune zone d’exclusion de patinage n’est créée ; la détection, l’arrêt et la récupération restent actifs. Enregistrez et redémarrez ROS2 pour appliquer.",
     "rootZoneHintTitle": "Arbres avec de grosses racines ?",
     "rootZoneHintDescription": "Le LiDAR 2D ne voit pas les racines sous son plan de scan (~10–20 cm). Dessinez l'arbre comme obstacle dans l'éditeur de carte et augmentez la marge des obstacles dessinés pour que la tonte et les transits restent hors de la zone de racines.",
     "avoidanceMargins": "Marges d'évitement",
@@ -2391,7 +2403,7 @@
     "transitSpeedTooltip": "Vitesse lors des trajets vers/depuis la base ou entre les zones",
     "mowingPattern": "Motif de tonte",
     "headlandWidth": "Largeur de tournière",
-    "headlandWidthTooltip": "Largeur de la bande périmétrique tondue avant le champ intérieur (retrait ConstHL de F2C). Relié à coverage_server.default_headland_width.",
+    "headlandWidthTooltip": "Largeur de la bande périmétrique tondue avant le champ intérieur (retrait ConstHL de F2C). Reliée à coverage_server.default_headland_width, où elle ne sert qu'à UNE chose : le nombre d'anneaux automatique, ceil(largeur de tournière / espacement des passes). Elle n'a donc d'effet que si Passes de tournière est sur Auto — avec un nombre de passes imposé (2 par défaut), cette valeur est ignorée.",
     "swathOverlap": "Chevauchement des passes",
     "swathOverlapTooltip": "Chevauchement supplémentaire entre passes adjacentes pour éviter les bandes non tondues. Espacement F2C = tool_width − swath_overlap.",
     "headlandPasses": "Passes de tournière",
