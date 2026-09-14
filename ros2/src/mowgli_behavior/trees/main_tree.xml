@@ -360,9 +360,12 @@
         <Inverter><IsDigEscalated/></Inverter>
 
         <!-- Blade off, wheels stopped, operator-visible reason. The bridge
-             clears the latch only when the robot reaches the charger, so the
-             robot holds here until the operator recalls it (COMMAND_HOME) or
-             extracts it — it cannot quietly resume into the same object. -->
+             clears the latch when the robot reaches the charger OR on an
+             explicit operator START (app / panel PLAY — behavior_tree_node's
+             high_level_control handler calls ~/clear_dig_escalation), so the
+             robot holds here until the operator recalls it (COMMAND_HOME),
+             extracts-and-restarts it, or docks it — it cannot quietly resume
+             into the same object on its own. -->
         <Sequence name="DigObstructionHandler">
           <SetMowerEnabled enabled="false"/>
           <StopMoving/>

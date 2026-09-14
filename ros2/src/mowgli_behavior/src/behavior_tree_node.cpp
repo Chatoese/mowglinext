@@ -292,6 +292,8 @@ private:
                                                        context_->context_mutex);
                                                    context_->dig_escalated = msg->data;
                                                  });
+    clear_dig_escalation_client_ =
+        create_client<std_srvs::srv::Trigger>("/hardware_bridge/clear_dig_escalation");
 
     // Localization-quality gate feed for LocalizationGuard, latched into
     // context_->localization_degraded.
@@ -643,6 +645,36 @@ private:
             if (cmd == HighLevelControl::Request::COMMAND_START)
             {
               clearSingleAreaMode(*context_);
+            }
+          }
+          // An explicit operator START (app or panel PLAY — both land here)
+          // releases the repeat-dig latch: the operator has extracted the
+          // robot and vouches for the spot. The guard itself stays fed by the
+          // bridge's latched /hardware_bridge/dig_escalated republish, so the
+          // tree unblocks only once the bridge confirms the clear; the
+          // session keepout stamped at the dig survives, so the next pass
+          // still routes around the hole. Read under the context lock the
+          // handler already serialises with the BT tick.
+          bool release_dig_escalation = false;
+          {
+            std::lock_guard<std::mutex> lock(context_->context_mutex);
+            release_dig_escalation =
+                (cmd == HighLevelControl::Request::COMMAND_START) && context_->dig_escalated;
+          }
+          if (release_dig_escalation)
+          {
+            if (clear_dig_escalation_client_->service_is_ready())
+            {
+              RCLCPP_WARN(get_logger(),
+                          "HighLevelControl: operator START releases the repeat-dig latch");
+              clear_dig_escalation_client_->async_send_request(
+                  std::make_shared<std_srvs::srv::Trigger::Request>());
+            }
+            else
+            {
+              RCLCPP_WARN(get_logger(),
+                          "HighLevelControl: dig escalation latched but "
+                          "clear_dig_escalation service unavailable — start stays blocked");
             }
           }
           resp->success = true;
@@ -1194,6 +1226,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr boundary_violation_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr lethal_boundary_violation_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr dig_escalated_sub_;
+  rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr clear_dig_escalation_client_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr fused_odom_sub_;
   // LocalizationGuard state. Both feeds write loc_obs_ under
   // context_->context_mutex and then call updateLocalizationHealthLocked().

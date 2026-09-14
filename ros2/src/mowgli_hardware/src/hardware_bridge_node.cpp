@@ -974,6 +974,33 @@ private:
         {
           on_set_firmware_debug(req, res);
         });
+
+    // Operator override for the repeat-dig latch: an explicit COMMAND_START
+    // (app or the panel PLAY button — both land in behavior_tree_node's
+    // high_level_control handler, which calls this) means the operator has
+    // extracted the robot and vouches for the spot. Reaching the charger
+    // (above) stays the other clear path. The latch history goes with it —
+    // stale latches from before the extraction must not count toward the
+    // next escalation.
+    srv_clear_dig_escalation_ = create_service<std_srvs::srv::Trigger>(
+        "~/clear_dig_escalation",
+        [this](const std::shared_ptr<std_srvs::srv::Trigger::Request> /*req*/,
+               std::shared_ptr<std_srvs::srv::Trigger::Response> res)
+        {
+          if (dig_escalated_)
+          {
+            dig_escalated_ = false;
+            publish_dig_escalated();
+            RCLCPP_INFO(get_logger(), "Dig escalation cleared: operator start.");
+            res->message = "dig escalation cleared";
+          }
+          else
+          {
+            res->message = "no dig escalation latched";
+          }
+          dig_latch_history_.clear();
+          res->success = true;
+        });
   }
 
   // Services this node CALLS (as opposed to create_services() above, which
@@ -3407,6 +3434,7 @@ private:
   rclcpp::Service<mowgli_interfaces::srv::MowerControl>::SharedPtr srv_mower_control_;
   rclcpp::Service<mowgli_interfaces::srv::EmergencyStop>::SharedPtr srv_emergency_stop_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_reboot_board_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr srv_clear_dig_escalation_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr srv_set_firmware_debug_;
 
   // Client (not server, unlike the srv_* members above): calls
