@@ -709,21 +709,50 @@ struct BTContext
 ///   * EndSession — the real session boundary, alongside every other
 ///     per-session set (attempted_areas, completed_areas, …). This is the
 ///     normal path: a targeted run finishes its area, docks, EndSession runs.
-///   * the ~/high_level_control handler on a plain COMMAND_START — a mowing
-///     session does NOT always end with EndSession (a low-battery dock or an
-///     emergency deliberately keeps the session alive so mowing auto-resumes),
-///     so a stale single-area clip could otherwise still be latched when the
-///     operator presses the ordinary "Start" button and expects the whole
-///     lawn. The GUI's "mow this area" button calls ~/start_in_area, which
-///     sets current_command itself and never goes through that handler, so
-///     clearing there cannot cancel a targeted request.
-/// Also drops an unconsumed target_area_index: a request that was never
-/// picked up (e.g. start_in_area during an emergency) must not silently
-/// hijack a later plain start.
+///   * the ~/high_level_control handler on a plain COMMAND_START that opens a
+///     NEW run (applyPlainStartToSingleAreaMode) — some paths stop the tree
+///     with ClearCommand but no EndSession (UNDOCK_FAILED, CHARGER_FAILED, the
+///     rain give-up), so a stale clip could otherwise still be latched when the
+///     operator presses the ordinary "Start" button and expects the whole lawn.
+///     A START that merely RESUMES a live session (current_command already 1:
+///     charge hold, emergency) keeps the clip — see
+///     applyPlainStartToSingleAreaMode. The GUI's "mow this area" button calls
+///     ~/start_in_area, which sets current_command itself and never goes
+///     through that handler, so clearing there cannot cancel a targeted request.
+/// Also drops an unconsumed target_area_index: a request that was never picked
+/// up must not silently hijack a later plain start of a NEW run.
 inline void clearSingleAreaMode(BTContext& ctx)
 {
   ctx.single_area_target.reset();
   ctx.target_area_index.reset();
+}
+
+/// Apply a plain COMMAND_START (app Play / panel PLAY, NOT ~/start_in_area) to
+/// the single-area clip, given the command that was active before it.
+///
+///   * previous_command != COMMAND_START — the tree was idle, docked after a
+///     finished/aborted session, or homing: the START opens a new "mow the
+///     lawn" run, so drop the clip (clearSingleAreaMode). EndSession normally
+///     clears it already; this covers sessions that ended without one.
+///   * previous_command == COMMAND_START — the session is still LIVE (charge
+///     hold, emergency, a guard pause, or mowing): the START only resumes it,
+///     so the clip AND a still-unconsumed ~/start_in_area request are kept.
+///     Field 2026-10-16: the operator chose area 2 in the GUI, an emergency
+///     was latched, and the panel PLAY used to resume it wiped the pending
+///     request — GetNextUnmowedArea then picked area 0 again ("starts at area
+///     1 every time"). The same happened to a targeted run resumed with Play
+///     from a low-battery charge hold.
+///
+/// Consequence: to turn a running targeted run into a full-lawn run, stop or
+/// home first, then Start.
+inline void applyPlainStartToSingleAreaMode(BTContext& ctx, uint8_t previous_command)
+{
+  constexpr uint8_t kCommandStart = 1;  // HighLevelControl::Request::COMMAND_START
+  if (previous_command == kCommandStart)
+  {
+    return;
+  }
+  clearSingleAreaMode(ctx);
 }
 
 /// True for the HighLevelStatus state_name values published while the tree

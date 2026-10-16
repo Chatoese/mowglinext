@@ -632,19 +632,15 @@ private:
                           "(battery %.1f %%)",
                           static_cast<double>(context_->battery_percent));
             }
+            const uint8_t previous_command = context_->current_command;
             context_->current_command = cmd;
-            // A plain COMMAND_START means "mow the lawn", so it must cancel any
-            // single-area clip still latched from an earlier ~/start_in_area run.
-            // EndSession normally clears it, but a session can legitimately stay
-            // alive without one (low-battery dock + auto-resume, emergency), and
-            // the clip is session state by design — it has to survive
-            // GetNextUnmowedArea re-entering after the targeted area finishes.
-            // Safe to do here: the GUI's "mow this area" button calls
-            // ~/start_in_area, which sets current_command itself and never
-            // reaches this handler, so this cannot cancel a targeted request.
+            // A plain COMMAND_START from a stopped tree means "mow the lawn" and
+            // cancels any single-area clip; a START while the session is still
+            // live only resumes it and keeps the clip. See
+            // applyPlainStartToSingleAreaMode for both cases.
             if (cmd == HighLevelControl::Request::COMMAND_START)
             {
-              clearSingleAreaMode(*context_);
+              applyPlainStartToSingleAreaMode(*context_, previous_command);
             }
           }
           // An explicit operator START (app or panel PLAY — both land here)

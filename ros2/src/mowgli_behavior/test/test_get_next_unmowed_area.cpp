@@ -47,8 +47,8 @@
 #include "mowgli_interfaces/srv/get_mowing_area.hpp"
 #include <gtest/gtest.h>
 
+using mowgli_behavior::applyPlainStartToSingleAreaMode;
 using mowgli_behavior::BTContext;
-using mowgli_behavior::clearSingleAreaMode;
 using mowgli_behavior::EndSession;
 using mowgli_behavior::GetNextUnmowedArea;
 using mowgli_behavior::MarkGuardHalt;
@@ -607,9 +607,10 @@ TEST_F(GetNextUnmowedAreaTest, TargetedRunDoesNotReMowItsOwnCompletedArea)
   }
 }
 
-// A plain COMMAND_START after a targeted run iterates all areas again. The
-// clear is production code (clearSingleAreaMode), called by the
-// ~/high_level_control handler on COMMAND_START.
+// A plain COMMAND_START that opens a NEW run after a targeted run iterates all
+// areas again. The decision is production code
+// (applyPlainStartToSingleAreaMode), called by the ~/high_level_control
+// handler on COMMAND_START with the command that was active before it.
 TEST_F(GetNextUnmowedAreaTest, PlainStartAfterATargetedRunIteratesAllAreas)
 {
   areas[0] = {"front_lawn", /*is_navigation_area=*/false};
@@ -624,13 +625,60 @@ TEST_F(GetNextUnmowedAreaTest, PlainStartAfterATargetedRunIteratesAllAreas)
   }
   ctx->completed_areas.insert(1u);
 
-  // Operator presses the ordinary "Start" button — same session (no EndSession,
-  // as after a low-battery dock + resume).
-  clearSingleAreaMode(*ctx);
+  // The tree was stopped by a ClearCommand WITHOUT EndSession (UNDOCK_FAILED,
+  // CHARGER_FAILED, rain give-up), then the operator presses the ordinary
+  // "Start" button: a new run, so the clip is dropped.
+  applyPlainStartToSingleAreaMode(*ctx, /*previous_command=*/0);
 
   auto tree = makeTree(/*max_areas=*/5);
   EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(ctx->current_area, 0) << "a plain start must resume normal all-areas iteration";
+}
+
+// A plain START while the session is still LIVE (current_command already 1:
+// emergency, charge hold) only resumes it, so a still-unconsumed
+// ~/start_in_area request survives. Field 2026-10-16: area 2 chosen in the GUI
+// during a latched emergency, panel PLAY to resume — the request used to be
+// wiped and GetNextUnmowedArea selected area 0 again.
+TEST_F(GetNextUnmowedAreaTest, ResumingStartKeepsAPendingAreaRequest)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  areas[2] = {"side_strip", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->target_area_index = 2;  // ~/start_in_area during the emergency
+  applyPlainStartToSingleAreaMode(*ctx, /*previous_command=*/1);
+  ASSERT_TRUE(ctx->target_area_index.has_value())
+      << "a resuming START must not drop the operator's area request";
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->current_area, 2) << "the operator's area, not area 0";
+}
+
+// ...and the latched clip of a running targeted run survives a resuming START
+// too (Play pressed in a low-battery charge hold): after the charge the BT
+// re-enters GetNextUnmowedArea and must go back to the targeted area.
+TEST_F(GetNextUnmowedAreaTest, ResumingStartKeepsTheSingleAreaClip)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->target_area_index = 1;
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    ASSERT_EQ(ctx->current_area, 1);
+  }
+
+  applyPlainStartToSingleAreaMode(*ctx, /*previous_command=*/1);
+  ASSERT_TRUE(ctx->single_area_target.has_value());
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->current_area, 1) << "a resumed targeted run must stay in its area";
 }
 
 // EndSession is the session boundary: the single-area clip dies there with the
