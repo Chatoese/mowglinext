@@ -184,6 +184,54 @@ BT::NodeStatus MarkGuardHalt::tick()
 // EndSession
 // ---------------------------------------------------------------------------
 
+namespace
+{
+/// Per-session flags and budgets that BOTH session ends reset: EndSession (the
+/// real session boundary) and PauseSession (HOME — progress kept). None of
+/// them is coverage progress; every one would wrongly carry a finished pass's
+/// state into the next run (see the per-line notes).
+void resetPerSessionFlags(BTContext& ctx)
+{
+  ctx.yaw_seeded_this_session = false;
+  ctx.skipped_swaths = 0;
+  ctx.undock_start_recorded = false;
+  ctx.obstacle_backoff_count = 0;
+  ctx.last_obstacle_backoff_time = std::chrono::steady_clock::time_point{};
+  // Clear the per-session "already planned" set and attempt counters
+  // so the next COMMAND_START can plan + mow each area afresh.
+  ctx.attempted_areas.clear();
+  ctx.area_attempt_count.clear();
+  // Also clear the per-area coverage high-water mark (documented in
+  // bt_context.hpp as "Cleared by EndSession"). Leaking it across sessions
+  // makes the next session's first GetNextUnmowedArea dispatch compute
+  // made_progress against last session's mark, so a freshly resumable area
+  // (coverage reset / re-mow) is wrongly judged "no progress" and pushed
+  // toward premature give-up at kMaxAreaAttempts.
+  ctx.area_last_coverage.clear();
+  ctx.area_last_cursor.clear();
+  // Start-pose-blocked bookkeeping (issue #487) is per-session too: the next
+  // COMMAND_START must get a fresh exemption budget, and a stale
+  // start_blocked_area would make the first dispatch of the new session skip
+  // the no-progress counter for a pass that never happened.
+  ctx.coverage_start_blocked = false;
+  ctx.start_blocked_area.reset();
+  ctx.area_start_blocked_count.clear();
+  // Guard-halted bookkeeping is per-session for the same reason: a stale
+  // guard_halted_reason would exempt the new session's first dispatch for a
+  // pause that happened last session.
+  ctx.guard_halted_reason.reset();
+  ctx.area_guard_halt_count.clear();
+  // SAFETY (issue #487 escape motion): disarm the escape and forget the
+  // last-motion direction at the session boundary. A token or a direction that
+  // survived into the next session would describe a pose the robot may no
+  // longer be standing in — the escape must re-derive both from the new
+  // session's own evidence or stand down.
+  ctx.start_blocked_escape_armed = false;
+  ctx.last_motion_valid = false;
+  ctx.last_motion_cmd_vx = 0.0;
+}
+}  // namespace
+
 BT::NodeStatus EndSession::tick()
 {
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
@@ -195,43 +243,7 @@ BT::NodeStatus EndSession::tick()
               ctx->skipped_swaths,
               ctx->undock_start_recorded ? "true" : "false",
               ctx->obstacle_backoff_count);
-  ctx->yaw_seeded_this_session = false;
-  ctx->skipped_swaths = 0;
-  ctx->undock_start_recorded = false;
-  ctx->obstacle_backoff_count = 0;
-  ctx->last_obstacle_backoff_time = std::chrono::steady_clock::time_point{};
-  // Clear the per-session "already planned" set and attempt counters
-  // so the next COMMAND_START can plan + mow each area afresh.
-  ctx->attempted_areas.clear();
-  ctx->area_attempt_count.clear();
-  // Also clear the per-area coverage high-water mark (documented in
-  // bt_context.hpp as "Cleared by EndSession"). Leaking it across sessions
-  // makes the next session's first GetNextUnmowedArea dispatch compute
-  // made_progress against last session's mark, so a freshly resumable area
-  // (coverage reset / re-mow) is wrongly judged "no progress" and pushed
-  // toward premature give-up at kMaxAreaAttempts.
-  ctx->area_last_coverage.clear();
-  ctx->area_last_cursor.clear();
-  // Start-pose-blocked bookkeeping (issue #487) is per-session too: the next
-  // COMMAND_START must get a fresh exemption budget, and a stale
-  // start_blocked_area would make the first dispatch of the new session skip
-  // the no-progress counter for a pass that never happened.
-  ctx->coverage_start_blocked = false;
-  ctx->start_blocked_area.reset();
-  ctx->area_start_blocked_count.clear();
-  // Guard-halted bookkeeping is per-session for the same reason: a stale
-  // guard_halted_reason would exempt the new session's first dispatch for a
-  // pause that happened last session.
-  ctx->guard_halted_reason.reset();
-  ctx->area_guard_halt_count.clear();
-  // SAFETY (issue #487 escape motion): disarm the escape and forget the
-  // last-motion direction at the session boundary. A token or a direction that
-  // survived into the next session would describe a pose the robot may no
-  // longer be standing in — the escape must re-derive both from the new
-  // session's own evidence or stand down.
-  ctx->start_blocked_escape_armed = false;
-  ctx->last_motion_valid = false;
-  ctx->last_motion_cmd_vx = 0.0;
+  resetPerSessionFlags(*ctx);
   // Swath-completion model (replaces the cell coverage grid): clear the
   // per-area completed-swath sets, swath counts, and the completed-area set so
   // the next COMMAND_START re-plans and re-mows every area from swath 0.
@@ -254,6 +266,32 @@ BT::NodeStatus EndSession::tick()
   // the next COMMAND_START must start fresh rather than resume a finished (or
   // aborted-and-docked) session from the persisted cursor.
   clearCoverageResumeState(*ctx);
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---------------------------------------------------------------------------
+// PauseSession
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus PauseSession::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  RCLCPP_INFO(ctx->node->get_logger(),
+              "PauseSession: HOME — keeping coverage progress (%zu completed area(s), %zu area(s) "
+              "with a resume cursor) for the next start; resetting per-session flags",
+              ctx->completed_areas.size(),
+              ctx->area_resume_pose_index.size());
+  resetPerSessionFlags(*ctx);
+  // A targeted run (~/start_in_area) ends here: the next plain START mows the
+  // whole lawn (resuming every area's kept progress); the targeted area's own
+  // cursor stays, so picking it again in the GUI resumes it.
+  clearSingleAreaMode(*ctx);
+  // Persist the kept progress, but as IDLE: the snapshot on disk still says
+  // COMMAND_START from the mow, and the startup loader auto-continues a
+  // persisted START — a container restart after HOME would otherwise drive the
+  // robot off the dock and start mowing on its own.
+  constexpr uint8_t kCommandIdle = 0;
+  saveCoverageResumeState(*ctx, kCommandIdle);
   return BT::NodeStatus::SUCCESS;
 }
 

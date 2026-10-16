@@ -15,6 +15,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
+
 namespace mowgli_behavior
 {
 
@@ -43,7 +46,13 @@ struct BTContext;
 /// Write ctx's coverage resume state to ctx.coverage_resume_path.
 /// No-op (returns false) when the path is empty. Returns true on a successful
 /// write.
-bool saveCoverageResumeState(const BTContext& ctx);
+///
+/// @p command_override, when set, is written as the persisted current_command
+/// instead of ctx.current_command. PauseSession uses it to store 0 (IDLE): the
+/// progress must survive a HOME, but a restart afterwards must NOT auto-continue
+/// mowing (the loader only auto-continues a persisted COMMAND_START).
+bool saveCoverageResumeState(const BTContext& ctx,
+                             std::optional<uint8_t> command_override = std::nullopt);
 
 /// Load coverage resume state from ctx.coverage_resume_path INTO ctx.
 /// Returns false (leaving ctx unchanged) when the path is empty, the file is
@@ -52,7 +61,8 @@ bool saveCoverageResumeState(const BTContext& ctx);
 bool loadCoverageResumeState(BTContext& ctx);
 
 /// Remove the persisted resume file (called by EndSession at a real session
-/// boundary so the next COMMAND_START does not resume a finished session).
+/// boundary so the next COMMAND_START does not resume a finished session;
+/// PauseSession — HOME — keeps it).
 /// Returns true if the file was removed or was already absent.
 bool clearCoverageResumeState(const BTContext& ctx);
 

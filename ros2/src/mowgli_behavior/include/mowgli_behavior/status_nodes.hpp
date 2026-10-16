@@ -176,6 +176,39 @@ public:
   BT::NodeStatus tick() override;
 };
 
+// ---------------------------------------------------------------------------
+// PauseSession
+// ---------------------------------------------------------------------------
+
+/// Ends a session at HOME WITHOUT discarding coverage progress: resets the same
+/// per-session flags and budgets as EndSession (yaw seed, undock bookkeeping,
+/// attempt counters, guard/start-blocked bookkeeping, escape token) and drops a
+/// targeted-run clip, but KEEPS the completed areas, completed swaths, resume
+/// cursors and plan fingerprints — in RAM and on disk — so the next START
+/// continues where HOME interrupted instead of restarting at area 0 / swath 0.
+/// The GUI's "start fresh" (~/clear_coverage_resume) still discards it.
+///
+/// The on-disk snapshot is re-written with current_command = IDLE, so a
+/// container restart after HOME does not auto-continue mowing.
+///
+/// Operator request 2026-10-16: "Home soll Fortschritt behalten" — EndSession
+/// in HomeSequence wiped everything, so every run after a HOME began at area 1.
+class PauseSession : public BT::SyncActionNode
+{
+public:
+  PauseSession(const std::string& name, const BT::NodeConfig& config)
+      : BT::SyncActionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
 class IncrementSkippedSwaths : public BT::SyncActionNode
 {
 public:

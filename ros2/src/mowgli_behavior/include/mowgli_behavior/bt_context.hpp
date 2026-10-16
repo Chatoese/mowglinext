@@ -714,8 +714,8 @@ struct BTContext
 ///     with ClearCommand but no EndSession (UNDOCK_FAILED, CHARGER_FAILED, the
 ///     rain give-up), so a stale clip could otherwise still be latched when the
 ///     operator presses the ordinary "Start" button and expects the whole lawn.
-///     A START that merely RESUMES a live session (current_command already 1:
-///     charge hold, emergency) keeps the clip — see
+///     A START that merely RESUMES a live or paused session (current_command
+///     already 1 or 8: charge hold, emergency, Pause) keeps the clip — see
 ///     applyPlainStartToSingleAreaMode. The GUI's "mow this area" button calls
 ///     ~/start_in_area, which sets current_command itself and never goes
 ///     through that handler, so clearing there cannot cancel a targeted request.
@@ -730,12 +730,14 @@ inline void clearSingleAreaMode(BTContext& ctx)
 /// Apply a plain COMMAND_START (app Play / panel PLAY, NOT ~/start_in_area) to
 /// the single-area clip, given the command that was active before it.
 ///
-///   * previous_command != COMMAND_START — the tree was idle, docked after a
-///     finished/aborted session, or homing: the START opens a new "mow the
-///     lawn" run, so drop the clip (clearSingleAreaMode). EndSession normally
-///     clears it already; this covers sessions that ended without one.
+///   * previous_command is neither COMMAND_START nor COMMAND_STOP — the tree
+///     was idle, docked after a finished/aborted session, or homing: the START
+///     opens a new "mow the lawn" run, so drop the clip (clearSingleAreaMode).
+///     EndSession / PauseSession normally clear it already; this covers
+///     sessions that ended without one.
 ///   * previous_command == COMMAND_START — the session is still LIVE (charge
-///     hold, emergency, a guard pause, or mowing): the START only resumes it,
+///     hold, emergency, a guard pause, or mowing) — or COMMAND_STOP, the GUI's
+///     Pause (documented as resumable with START): the START only resumes it,
 ///     so the clip AND a still-unconsumed ~/start_in_area request are kept.
 ///     Field 2026-10-16: the operator chose area 2 in the GUI, an emergency
 ///     was latched, and the panel PLAY used to resume it wiped the pending
@@ -743,12 +745,13 @@ inline void clearSingleAreaMode(BTContext& ctx)
 ///     1 every time"). The same happened to a targeted run resumed with Play
 ///     from a low-battery charge hold.
 ///
-/// Consequence: to turn a running targeted run into a full-lawn run, stop or
+/// Consequence: to turn a running targeted run into a full-lawn run, send it
 /// home first, then Start.
 inline void applyPlainStartToSingleAreaMode(BTContext& ctx, uint8_t previous_command)
 {
   constexpr uint8_t kCommandStart = 1;  // HighLevelControl::Request::COMMAND_START
-  if (previous_command == kCommandStart)
+  constexpr uint8_t kCommandStop = 8;  // HighLevelControl::Request::COMMAND_STOP (Pause)
+  if (previous_command == kCommandStart || previous_command == kCommandStop)
   {
     return;
   }

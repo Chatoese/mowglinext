@@ -33,6 +33,7 @@
  */
 
 #include <chrono>
+#include <cstdio>
 #include <map>
 #include <memory>
 #include <string>
@@ -43,6 +44,7 @@
 #include "behaviortree_cpp/bt_factory.h"
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_behavior/coverage_nodes.hpp"
+#include "mowgli_behavior/coverage_persistence.hpp"
 #include "mowgli_behavior/status_nodes.hpp"
 #include "mowgli_interfaces/srv/get_mowing_area.hpp"
 #include <gtest/gtest.h>
@@ -52,6 +54,7 @@ using mowgli_behavior::BTContext;
 using mowgli_behavior::EndSession;
 using mowgli_behavior::GetNextUnmowedArea;
 using mowgli_behavior::MarkGuardHalt;
+using mowgli_behavior::PauseSession;
 using GetMowingArea = mowgli_interfaces::srv::GetMowingArea;
 
 // ---------------------------------------------------------------------------
@@ -109,6 +112,7 @@ protected:
 
     factory.registerNodeType<GetNextUnmowedArea>("GetNextUnmowedArea");
     factory.registerNodeType<EndSession>("EndSession");
+    factory.registerNodeType<PauseSession>("PauseSession");
     factory.registerNodeType<MarkGuardHalt>("MarkGuardHalt");
 
     server_node = rclcpp::Node::make_shared("fake_map_server");
@@ -675,6 +679,16 @@ TEST_F(GetNextUnmowedAreaTest, ResumingStartKeepsTheSingleAreaClip)
 
   applyPlainStartToSingleAreaMode(*ctx, /*previous_command=*/1);
   ASSERT_TRUE(ctx->single_area_target.has_value());
+  // GUI Pause (COMMAND_STOP) then Play resumes the targeted run too.
+  applyPlainStartToSingleAreaMode(*ctx, /*previous_command=*/8);
+  ASSERT_TRUE(ctx->single_area_target.has_value());
+  // A START after HOME (COMMAND_HOME) opens a new run instead.
+  {
+    BTContext other;
+    other.single_area_target = 1u;
+    applyPlainStartToSingleAreaMode(other, /*previous_command=*/2);
+    EXPECT_FALSE(other.single_area_target.has_value());
+  }
 
   auto tree = makeTree(/*max_areas=*/5);
   EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
@@ -705,6 +719,68 @@ TEST_F(GetNextUnmowedAreaTest, EndSessionClearsSingleAreaMode)
   auto tree = makeTree(/*max_areas=*/5);
   EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
   EXPECT_EQ(ctx->current_area, 0);
+}
+
+// HOME keeps the coverage progress (operator request 2026-10-16: every run
+// after a HOME began at area 1 because HomeSequence ran EndSession).
+// PauseSession resets the per-session budgets but keeps completed areas and
+// resume cursors, so the next START continues in the interrupted area.
+TEST_F(GetNextUnmowedAreaTest, PauseSessionKeepsProgressSoTheNextStartContinues)
+{
+  areas[0] = {"front_lawn", /*is_navigation_area=*/false};
+  areas[1] = {"back_lawn", /*is_navigation_area=*/false};
+  waitForService();
+
+  ctx->completed_areas.insert(0u);
+  ctx->area_completed_swaths[1] = {0u, 1u};
+  ctx->area_resume_pose_index[1] = 500;
+  ctx->area_attempt_count[1] = 3;
+  ctx->single_area_target = 1u;
+
+  auto pause_tree = factory.createTreeFromText(
+      "<root BTCPP_format=\"4\"><BehaviorTree "
+      "ID=\"MainTree\"><PauseSession/></BehaviorTree></root>",
+      blackboard);
+  ASSERT_EQ(pause_tree.tickOnce(), BT::NodeStatus::SUCCESS);
+
+  EXPECT_EQ(ctx->completed_areas.count(0u), 1u) << "completed areas must survive HOME";
+  EXPECT_EQ(ctx->area_resume_pose_index.at(1), 500u) << "the resume cursor must survive HOME";
+  EXPECT_EQ(ctx->area_completed_swaths.at(1).size(), 2u);
+  EXPECT_TRUE(ctx->area_attempt_count.empty()) << "per-session budgets are reset";
+  EXPECT_FALSE(ctx->single_area_target.has_value()) << "HOME ends a targeted run";
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->current_area, 1) << "the next START continues in the interrupted area, not area 0";
+}
+
+// SAFETY: the kept progress is persisted as IDLE. The snapshot written while
+// mowing says COMMAND_START, and the startup loader auto-continues a persisted
+// START — without the override a container restart after HOME would undock
+// and start mowing on its own.
+TEST_F(GetNextUnmowedAreaTest, PauseSessionPersistsProgressAsIdle)
+{
+  const std::string path = ::testing::TempDir() + "pause_session_resume.txt";
+  std::remove(path.c_str());
+  ctx->coverage_resume_path = path;
+  ctx->current_command = 1;  // still COMMAND_START: ClearCommand runs after PauseSession
+  ctx->completed_areas.insert(0u);
+  ctx->area_resume_pose_index[1] = 500;
+
+  auto pause_tree = factory.createTreeFromText(
+      "<root BTCPP_format=\"4\"><BehaviorTree "
+      "ID=\"MainTree\"><PauseSession/></BehaviorTree></root>",
+      blackboard);
+  ASSERT_EQ(pause_tree.tickOnce(), BT::NodeStatus::SUCCESS);
+
+  BTContext loaded;
+  loaded.coverage_resume_path = path;
+  ASSERT_TRUE(mowgli_behavior::loadCoverageResumeState(loaded)) << "HOME must keep the snapshot";
+  EXPECT_EQ(loaded.current_command, 0u) << "a restart after HOME must not auto-continue mowing";
+  EXPECT_EQ(loaded.completed_areas.count(0u), 1u);
+  ASSERT_EQ(loaded.area_resume_pose_index.count(1u), 1u);
+  EXPECT_EQ(loaded.area_resume_pose_index.at(1), 500u);
+  std::remove(path.c_str());
 }
 
 // Resume-cursor advance between dispatches counts as progress and resets the

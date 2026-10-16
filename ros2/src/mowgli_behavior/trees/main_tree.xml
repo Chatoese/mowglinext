@@ -1210,7 +1210,11 @@
               </Sequence>
             </ReactiveFallback>
             <PublishHighLevelStatus state="1" state_name="IDLE_DOCKED"/>
-            <EndSession/>
+            <!-- HOME keeps the coverage progress (PauseSession, not
+                 EndSession): the next START continues where HOME interrupted
+                 instead of restarting at area 0 / swath 0. Operator request
+                 2026-10-16. The GUI's "start fresh" still discards it. -->
+            <PauseSession/>
             <ClearCommand/>
           </Sequence>
         </ReactiveSequence>

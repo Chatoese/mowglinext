@@ -80,6 +80,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   // and a flapping sensor fails the mow at 0 swaths (field 2026-09-07/08).
   factory.registerNodeType<MarkGuardHalt>("MarkGuardHalt");
   factory.registerNodeType<EndSession>("EndSession");
+  factory.registerNodeType<PauseSession>("PauseSession");
   factory.registerNodeType<IncrementSkippedSwaths>("IncrementSkippedSwaths");
   factory.registerNodeType<SaveObstacles>("SaveObstacles");
   factory.registerNodeType<SetNavMode>("SetNavMode");

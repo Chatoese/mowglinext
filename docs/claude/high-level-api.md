@@ -6,7 +6,7 @@
 | Value | Constant | Description |
 |-------|----------|-------------|
 | 1 | `COMMAND_START` | Begin autonomous mowing. While the BT is parked in a mid-session charge hold (`state_name` `CHARGING` / `CRITICAL_BATTERY_CHARGING`, `current_command` already 1) it instead **requests a manual resume**: the handler sets `BTContext::manual_resume_requested`, and `IsManualResumeRequested` in both wait loops honours it only above `battery_manual_resume_percent` (default 30 %; refused with a WARN below, and the hold continues). The GUI offers "Resume now" in those two states |
-| 2 | `COMMAND_HOME` | Return to dock |
+| 2 | `COMMAND_HOME` | Return to dock. Ends the session with `PauseSession`, **keeping** coverage progress (completed areas, resume cursors — in RAM and in the resume file, persisted as IDLE so a restart does not auto-mow); the next `COMMAND_START` continues where HOME interrupted. `~/clear_coverage_resume` is the "start fresh" alternative. |
 | 3 | `COMMAND_RECORD_AREA` (alias `COMMAND_S1`) | Start area boundary recording. Both constants are declared with value 3 |
 | 4 | `COMMAND_S2` | Mow next area. **Normalised to `COMMAND_START` in the service handler** (`behavior_tree_node.cpp:561`) — there is no separate "next area" BT branch; mowing always resumes at the next un-mowed area via `GetNextUnmowedArea` |
 | 5 | `COMMAND_RECORD_FINISH` | Finish recording, save polygon |

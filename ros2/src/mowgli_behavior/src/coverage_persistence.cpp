@@ -34,7 +34,7 @@ namespace
 constexpr const char* kHeader = "mowgli_coverage_resume v2";
 }  // namespace
 
-bool saveCoverageResumeState(const BTContext& ctx)
+bool saveCoverageResumeState(const BTContext& ctx, std::optional<uint8_t> command_override)
 {
   if (ctx.coverage_resume_path.empty())
   {
@@ -62,7 +62,8 @@ bool saveCoverageResumeState(const BTContext& ctx)
   // written as a number, not a raw char. A terminal EndSession removes the whole
   // file (clearCoverageResumeState), so a stale active command is never left on
   // disk.
-  out << "current_command " << static_cast<unsigned>(ctx.current_command) << '\n';
+  out << "current_command " << static_cast<unsigned>(command_override.value_or(ctx.current_command))
+      << '\n';
   // Single-area mode (a ~/start_in_area targeted run). Persisted for the same
   // reason as current_command: a restart mid-run auto-re-enters MowingSequence,
   // and without this the restored run would silently widen into a mow-the-whole-
