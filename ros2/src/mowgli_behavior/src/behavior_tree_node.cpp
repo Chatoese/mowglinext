@@ -87,7 +87,17 @@ public:
     context_->node = shared_from_this();
     context_->tf_buffer = std::make_shared<tf2_ros::Buffer>(get_clock());
     context_->tf_listener = std::make_shared<tf2_ros::TransformListener>(*context_->tf_buffer);
-    context_->helper_node = rclcpp::Node::make_shared("_bt_helper_node");
+    // The helper must NOT inherit the process-global ROS arguments: the launch
+    // file's name="behavior_tree_node" becomes a global `-r __node:=` remap,
+    // which renamed this node too — two nodes named /behavior_tree_node in the
+    // graph ("nodes ... share an exact name" warning). Every helper client uses
+    // an absolute service name, so dropping the global remaps changes nothing
+    // else; use_sim_time is forwarded explicitly because the global
+    // --params-file args no longer reach it.
+    context_->helper_node = rclcpp::Node::make_shared(
+        "_bt_helper_node",
+        rclcpp::NodeOptions().use_global_arguments(false).parameter_overrides(
+            {rclcpp::Parameter("use_sim_time", get_parameter("use_sim_time").as_bool())}));
 
     // Disk-backed coverage resume: where FollowStrip persists per-area progress
     // so an interrupted mow survives a full process/container restart (reboot,
