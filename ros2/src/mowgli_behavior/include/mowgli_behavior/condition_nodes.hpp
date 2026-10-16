@@ -929,4 +929,34 @@ public:
   BT::NodeStatus tick() override;
 };
 
+/// Returns SUCCESS while an operator "mow this area" request
+/// (~/start_in_area) is pending, i.e. ctx->target_area_index is set and has
+/// not yet been consumed by GetNextUnmowedArea::onStart(). FAILURE otherwise.
+///
+/// NON-consuming on purpose: GetNextUnmowedArea is the single consumer of the
+/// request. This condition only lets the AreaLoop preempt the area that is
+/// currently being mowed (AreaSwitchGuard in main_tree.xml), so the request
+/// takes effect immediately instead of after the current area finishes.
+///
+/// Field problem this solves (2026-10-16): pressing "Mow" on an area in the
+/// GUI while the robot was already mowing did nothing visible — the handler set
+/// current_command = 1 (already 1, a no-op) and parked the request until the
+/// NEXT GetNextUnmowedArea entry, which only happens once the current area is
+/// done. Three requests for area 2 were logged with no "targeted run" line.
+class IsAreaSwitchRequested : public BT::ConditionNode
+{
+public:
+  IsAreaSwitchRequested(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
 }  // namespace mowgli_behavior

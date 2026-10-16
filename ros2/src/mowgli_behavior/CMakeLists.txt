@@ -586,6 +586,42 @@ if(BUILD_TESTING)
     tf2_geometry_msgs
   )
 
+  # ---- test_area_switch ----
+  # Operator area switch while mowing (field 2026-10-16): GUI "Mow" on an area
+  # mid-mow only parked the request until the current area finished. Pins the
+  # AreaSwitchGuard shape behaviourally (a mid-mow request halts the in-flight
+  # area exactly once and the loop re-selects the requested area; a request
+  # pending at loop start is consumed without preempting) and structurally
+  # against the real main_tree.xml (consumer before the guard, blade-off
+  # SwitchArea gated on the request).
+  ament_add_gtest(test_area_switch
+    test/test_area_switch.cpp
+    src/condition_nodes.cpp
+  )
+
+  target_include_directories(test_area_switch PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+
+  target_compile_definitions(test_area_switch PRIVATE
+    MOWGLI_MAIN_TREE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/trees/main_tree.xml"
+  )
+
+  ament_target_dependencies(test_area_switch
+    rclcpp
+    behaviortree_cpp
+    mowgli_interfaces
+    nav2_msgs
+    nav_msgs
+    geometry_msgs
+    std_msgs
+    std_srvs
+    tf2
+    tf2_ros
+    tf2_geometry_msgs
+  )
+
   # ---- test_manual_charge_guard ----
   # ManualChargeGuard stops the mow when the operator puts the mower back on
   # the dock mid-run. It is the first reader of IsCharging for which a

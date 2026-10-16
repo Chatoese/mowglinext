@@ -905,145 +905,170 @@
                        geometry (operation_width, headland_width, passes,
                        insets) lives in coverage_server's parameters,
                        injected at launch from mowgli_robot.yaml. -->
-                  <Fallback name="MowOrSkipArea">
-                    <Sequence name="PlanThenFollow">
-                      <PublishHighLevelStatus state="2" state_name="PLANNING"/>
-                      <PlanCoverageArea
-                          area_index="{current_area_index}"/>
-                      <!-- Obstacle-aware transit to the coverage path start.
-                           On a re-plan pass (AreaLoop re-enters an area that
-                           still has un-mowed cells), the remaining region can
-                           lie BEHIND a large obstacle the FTC follower cannot
-                           reach in a straight carrot line — it would just
-                           abort against the obstacle and the region behind it
-                           would never be mowed (field: "toute une partie du
-                           jardin pas faite"). TransitToStrip routes the robot
-                           AROUND the obstacle via the Nav2 global planner
-                           (Smac + the enabled global obstacle_layer), then
-                           FollowStrip mows from there. Soft: if the start is
-                           genuinely unreachable (walled off), fall through and
-                           let FollowStrip try from the closest pose; the
-                           no-progress guard in GetNextUnmowedArea then retires
-                           the area after a pass with no coverage gain (so a
-                           truly unreachable region doesn't loop forever, and a
-                           DYNAMIC obstacle that later clears is picked up on a
-                           subsequent pass). -->
-                      <Fallback name="TransitToCoverageStart">
-                        <Sequence name="TransitAroundObstacles">
-                          <PublishHighLevelStatus state="2" state_name="TRANSIT"/>
-                          <!-- Blade off while circumnavigating; FollowStrip
-                               re-enables it when mowing resumes. -->
-                          <SetMowerEnabled enabled="false"/>
-                          <TransitToStrip/>
+                  <!-- Operator area switch (GUI "Mow" on an area while already mowing).
+                       ~/start_in_area only parks the request in target_area_index and sets
+                       current_command = 1 — which is ALREADY 1 mid-mow, so on its own the
+                       request waited until the current area finished and GetNextUnmowedArea
+                       re-entered (field 2026-10-16: three "StartInArea: received area=2"
+                       with no "targeted run" line). AreaSwitchGuard re-checks the pending
+                       request every tick and HALTS the in-flight area (FollowStrip::onHalted
+                       cancels the FTC goal and keeps the resume cursor). The halt is a
+                       switch, not a failure: AreaUnreachable does NOT run (the area is not
+                       retired and its progress is kept); SwitchArea turns the blade off, stops,
+                       and returns SUCCESS so the AreaLoop re-cycles and GetNextUnmowedArea —
+                       the single consumer of the request — selects the operator's area.
+                       GetNextUnmowedArea sits BEFORE the guard so a request that is already
+                       pending when the loop starts is consumed first and never preempts. -->
+                  <Fallback name="MowAreaOrSwitch">
+                    <ReactiveSequence name="AreaSwitchGuard">
+                      <Inverter><IsAreaSwitchRequested/></Inverter>
+                      <Fallback name="MowOrSkipArea">
+                        <Sequence name="PlanThenFollow">
+                          <PublishHighLevelStatus state="2" state_name="PLANNING"/>
+                          <PlanCoverageArea
+                              area_index="{current_area_index}"/>
+                          <!-- Obstacle-aware transit to the coverage path start.
+                               On a re-plan pass (AreaLoop re-enters an area that
+                               still has un-mowed cells), the remaining region can
+                               lie BEHIND a large obstacle the FTC follower cannot
+                               reach in a straight carrot line — it would just
+                               abort against the obstacle and the region behind it
+                               would never be mowed (field: "toute une partie du
+                               jardin pas faite"). TransitToStrip routes the robot
+                               AROUND the obstacle via the Nav2 global planner
+                               (Smac + the enabled global obstacle_layer), then
+                               FollowStrip mows from there. Soft: if the start is
+                               genuinely unreachable (walled off), fall through and
+                               let FollowStrip try from the closest pose; the
+                               no-progress guard in GetNextUnmowedArea then retires
+                               the area after a pass with no coverage gain (so a
+                               truly unreachable region doesn't loop forever, and a
+                               DYNAMIC obstacle that later clears is picked up on a
+                               subsequent pass). -->
+                          <Fallback name="TransitToCoverageStart">
+                            <Sequence name="TransitAroundObstacles">
+                              <PublishHighLevelStatus state="2" state_name="TRANSIT"/>
+                              <!-- Blade off while circumnavigating; FollowStrip
+                                   re-enables it when mowing resumes. -->
+                              <SetMowerEnabled enabled="false"/>
+                              <TransitToStrip/>
+                            </Sequence>
+                            <AlwaysSuccess/>
+                          </Fallback>
+                          <RetryUntilSuccessful num_attempts="5" name="FollowStripRetry">
+                            <Fallback name="MowOrRecover">
+                            <Sequence name="MowPath">
+                              <PublishHighLevelStatus state="2" state_name="MOWING"/>
+                              <FollowStrip/>
+                            </Sequence>
+                            <!-- Start-pose blocked recovery (issue #487).
+                                 Every blade-off sub-path transit was refused by
+                                 the Nav2 planner with START_OCCUPIED and NOTHING
+                                 was mowed: the robot is STANDING on a lethal or
+                                 keepout cell (2026-08-24: it undocked into the
+                                 inflated keepout of a 0.25 m obstacle circle), so
+                                 no plan exists from here regardless of the goal.
+                                 That is NOT an unmowable field — a second attempt
+                                 13 min later mowed the same area to 100 %.
+
+                                 Non-motion recovery only: stop, clear the
+                                 costmaps, wait for a fresh update, then bubble up
+                                 FAILURE so FollowStripRetry re-ticks FollowStrip.
+                                 Be honest about the clear: it only helps when the
+                                 lethal cell came from a TRANSIENT obstacle_layer
+                                 reading. A keepout zone is a static costmap
+                                 FILTER — ClearEntireCostmap does not touch it, so
+                                 the retry from an unchanged pose will fail again
+                                 and GetNextUnmowedArea's bounded exemption
+                                 (kMaxStartBlockedAttempts) eventually retires the
+                                 area rather than looping.
+
+                                 SAFETY — the escape motion (issue #487
+                                 follow-up, option B): EscapeStartBlocked nudges
+                                 the robot OPPOSITE the last motion it was actually
+                                 commanded to make, bounded to
+                                 start_blocked_escape_distance (0.40 m default) AND
+                                 start_blocked_escape_timeout_s (6 s default). That
+                                 one signal gets both field cases right: after an
+                                 undock the robot REVERSED into the spot, so the
+                                 escape drives FORWARD; mid-mow it arrived driving
+                                 forward, so the escape REVERSES onto ground it
+                                 occupied seconds ago. If the direction is unknown,
+                                 stale or ~zero it commands NOTHING and this branch
+                                 behaves exactly as it did before the motion
+                                 existed. The blade is switched off AND verified
+                                 off first, and the command is published on
+                                 /cmd_vel_nav so it passes through
+                                 collision_monitor and the LOWEST-priority
+                                 twist_mux lane like every other autonomous
+                                 motion — teleop and the emergency lane override it
+                                 instantly, and the STM32 remains the sole
+                                 emergency-stop authority.
+
+                                 Placed FIRST in MowOrRecover because
+                                 IsCoverageStartBlocked is an exact, consumed
+                                 signal, while IsObstacleStuck below would also
+                                 match a robot that has simply not moved. -->
+                            <Sequence name="StartPoseBlockedRetry">
+                              <IsCoverageStartBlocked/>
+                              <PublishHighLevelStatus state="2"
+                                                      state_name="START_POSE_BLOCKED"/>
+                              <SetMowerEnabled enabled="false"/>
+                              <StopMoving/>
+                              <EscapeStartBlocked/>
+                              <ClearCostmap/>
+                              <WaitForDuration duration_sec="2.0"/>
+                              <AlwaysFailure/>
+                            </Sequence>
+                            <!-- Obstacle wedge recovery: BackUp + ClearCostmap
+                                 then bubble up FAILURE so RetryUntilSuccessful
+                                 re-ticks FollowStrip, which resumes at the
+                                 furthest pose reached along the current
+                                 drivable_subpaths sub-path. -->
+                            <Sequence name="StuckBackoff">
+                              <IsObstacleStuck min_duration_sec="4.0"
+                                               max_count="3"
+                                               cooldown_sec="8.0"/>
+                              <PublishHighLevelStatus state="2"
+                                                      state_name="OBSTACLE_BACKOFF"/>
+                              <SetMowerEnabled enabled="false"/>
+                              <BackUp backup_dist="0.40" backup_speed="0.15"/>
+                              <ClearCostmap/>
+                              <AlwaysFailure/>
+                            </Sequence>
+                            <!-- Dynamic-obstacle clear gate: ClearCostmap +
+                                 brief wait, then re-tick FollowStrip on the
+                                 same path. -->
+                            <Sequence name="DynamicObstacleSkip">
+                              <WasRecentlyInCollisionStop max_age_sec="10.0"/>
+                              <PublishHighLevelStatus state="2"
+                                                      state_name="DYNAMIC_OBSTACLE_CLEARED"/>
+                              <SetMowerEnabled enabled="false"/>
+                              <StopMoving/>
+                              <ClearCostmap/>
+                              <WaitForDuration duration_sec="1.0"/>
+                              <AlwaysFailure/>
+                            </Sequence>
+                            </Fallback>
+                          </RetryUntilSuccessful>
                         </Sequence>
-                        <AlwaysSuccess/>
+                        <!-- Fallback to here on PlanCoverageArea FAILURE
+                             (empty path / planning error) OR after the 5
+                             FollowStrip retries are exhausted. Either way,
+                             mark the area attempted and advance. -->
+                        <Sequence name="AreaUnreachable">
+                          <PublishHighLevelStatus state="2" state_name="AREA_UNREACHABLE"/>
+                          <SetMowerEnabled enabled="false"/>
+                          <StopMoving/>
+                          <AlwaysSuccess/>
+                        </Sequence>
                       </Fallback>
-                      <RetryUntilSuccessful num_attempts="5" name="FollowStripRetry">
-                        <Fallback name="MowOrRecover">
-                        <Sequence name="MowPath">
-                          <PublishHighLevelStatus state="2" state_name="MOWING"/>
-                          <FollowStrip/>
-                        </Sequence>
-                        <!-- Start-pose blocked recovery (issue #487).
-                             Every blade-off sub-path transit was refused by
-                             the Nav2 planner with START_OCCUPIED and NOTHING
-                             was mowed: the robot is STANDING on a lethal or
-                             keepout cell (2026-08-24: it undocked into the
-                             inflated keepout of a 0.25 m obstacle circle), so
-                             no plan exists from here regardless of the goal.
-                             That is NOT an unmowable field — a second attempt
-                             13 min later mowed the same area to 100 %.
-
-                             Non-motion recovery only: stop, clear the
-                             costmaps, wait for a fresh update, then bubble up
-                             FAILURE so FollowStripRetry re-ticks FollowStrip.
-                             Be honest about the clear: it only helps when the
-                             lethal cell came from a TRANSIENT obstacle_layer
-                             reading. A keepout zone is a static costmap
-                             FILTER — ClearEntireCostmap does not touch it, so
-                             the retry from an unchanged pose will fail again
-                             and GetNextUnmowedArea's bounded exemption
-                             (kMaxStartBlockedAttempts) eventually retires the
-                             area rather than looping.
-
-                             SAFETY — the escape motion (issue #487
-                             follow-up, option B): EscapeStartBlocked nudges
-                             the robot OPPOSITE the last motion it was actually
-                             commanded to make, bounded to
-                             start_blocked_escape_distance (0.40 m default) AND
-                             start_blocked_escape_timeout_s (6 s default). That
-                             one signal gets both field cases right: after an
-                             undock the robot REVERSED into the spot, so the
-                             escape drives FORWARD; mid-mow it arrived driving
-                             forward, so the escape REVERSES onto ground it
-                             occupied seconds ago. If the direction is unknown,
-                             stale or ~zero it commands NOTHING and this branch
-                             behaves exactly as it did before the motion
-                             existed. The blade is switched off AND verified
-                             off first, and the command is published on
-                             /cmd_vel_nav so it passes through
-                             collision_monitor and the LOWEST-priority
-                             twist_mux lane like every other autonomous
-                             motion — teleop and the emergency lane override it
-                             instantly, and the STM32 remains the sole
-                             emergency-stop authority.
-
-                             Placed FIRST in MowOrRecover because
-                             IsCoverageStartBlocked is an exact, consumed
-                             signal, while IsObstacleStuck below would also
-                             match a robot that has simply not moved. -->
-                        <Sequence name="StartPoseBlockedRetry">
-                          <IsCoverageStartBlocked/>
-                          <PublishHighLevelStatus state="2"
-                                                  state_name="START_POSE_BLOCKED"/>
-                          <SetMowerEnabled enabled="false"/>
-                          <StopMoving/>
-                          <EscapeStartBlocked/>
-                          <ClearCostmap/>
-                          <WaitForDuration duration_sec="2.0"/>
-                          <AlwaysFailure/>
-                        </Sequence>
-                        <!-- Obstacle wedge recovery: BackUp + ClearCostmap
-                             then bubble up FAILURE so RetryUntilSuccessful
-                             re-ticks FollowStrip, which resumes at the
-                             furthest pose reached along the current
-                             drivable_subpaths sub-path. -->
-                        <Sequence name="StuckBackoff">
-                          <IsObstacleStuck min_duration_sec="4.0"
-                                           max_count="3"
-                                           cooldown_sec="8.0"/>
-                          <PublishHighLevelStatus state="2"
-                                                  state_name="OBSTACLE_BACKOFF"/>
-                          <SetMowerEnabled enabled="false"/>
-                          <BackUp backup_dist="0.40" backup_speed="0.15"/>
-                          <ClearCostmap/>
-                          <AlwaysFailure/>
-                        </Sequence>
-                        <!-- Dynamic-obstacle clear gate: ClearCostmap +
-                             brief wait, then re-tick FollowStrip on the
-                             same path. -->
-                        <Sequence name="DynamicObstacleSkip">
-                          <WasRecentlyInCollisionStop max_age_sec="10.0"/>
-                          <PublishHighLevelStatus state="2"
-                                                  state_name="DYNAMIC_OBSTACLE_CLEARED"/>
-                          <SetMowerEnabled enabled="false"/>
-                          <StopMoving/>
-                          <ClearCostmap/>
-                          <WaitForDuration duration_sec="1.0"/>
-                          <AlwaysFailure/>
-                        </Sequence>
-                        </Fallback>
-                      </RetryUntilSuccessful>
-                    </Sequence>
-                    <!-- Fallback to here on PlanCoverageArea FAILURE
-                         (empty path / planning error) OR after the 5
-                         FollowStrip retries are exhausted. Either way,
-                         mark the area attempted and advance. -->
-                    <Sequence name="AreaUnreachable">
-                      <PublishHighLevelStatus state="2" state_name="AREA_UNREACHABLE"/>
+                    </ReactiveSequence>
+                    <Sequence name="SwitchArea">
+                      <IsAreaSwitchRequested/>
+                      <PublishHighLevelStatus state="2" state_name="AREA_SWITCH"/>
                       <SetMowerEnabled enabled="false"/>
                       <StopMoving/>
-                      <AlwaysSuccess/>
                     </Sequence>
                   </Fallback>
                 </Sequence>

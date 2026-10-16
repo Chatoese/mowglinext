@@ -1005,4 +1005,29 @@ BT::NodeStatus IsCoverageStartBlocked::tick()
   return BT::NodeStatus::SUCCESS;
 }
 
+// ---------------------------------------------------------------------------
+// IsAreaSwitchRequested
+// ---------------------------------------------------------------------------
+
+BT::NodeStatus IsAreaSwitchRequested::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+
+  // Not guarded by context_mutex — target_area_index is written by the
+  // ~/start_in_area service callback, which shares the BT tick's
+  // MutuallyExclusive callback group (see the thread-safety comment in
+  // bt_context.hpp). Read-only: GetNextUnmowedArea consumes the request.
+  if (!ctx->target_area_index.has_value())
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+  RCLCPP_INFO_THROTTLE(ctx->node->get_logger(),
+                       *ctx->node->get_clock(),
+                       1000,
+                       "IsAreaSwitchRequested: operator selected area %d — preempting the "
+                       "current area (resume cursor kept) to switch",
+                       *ctx->target_area_index);
+  return BT::NodeStatus::SUCCESS;
+}
+
 }  // namespace mowgli_behavior
