@@ -291,7 +291,18 @@ BT::NodeStatus PauseSession::tick()
   // persisted START — a container restart after HOME would otherwise drive the
   // robot off the dock and start mowing on its own.
   constexpr uint8_t kCommandIdle = 0;
-  saveCoverageResumeState(*ctx, kCommandIdle);
+  if (!saveCoverageResumeState(*ctx, kCommandIdle) && !ctx->coverage_resume_path.empty())
+  {
+    // Fail SAFE: the old snapshot (COMMAND_START) would survive a failed
+    // rewrite and auto-continue mowing after a restart. Losing the persisted
+    // progress is acceptable; an unattended start is not. The RAM copy is kept,
+    // so a START without a restart still continues.
+    clearCoverageResumeState(*ctx);
+    RCLCPP_ERROR(ctx->node->get_logger(),
+                 "PauseSession: could not persist the kept progress to %s — removed the "
+                 "snapshot so a restart cannot auto-continue mowing (progress kept in RAM only)",
+                 ctx->coverage_resume_path.c_str());
+  }
   return BT::NodeStatus::SUCCESS;
 }
 
